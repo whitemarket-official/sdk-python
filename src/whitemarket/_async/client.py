@@ -13,7 +13,9 @@ from whitemarket._async.credentials import (
     AsyncPartnerTokenCredentials,
     AsyncTokenRenewer,
 )
+from whitemarket._async.exports import AsyncExportClient
 from whitemarket._async.graphql import AsyncGraphQLExecutor
+from whitemarket._async.market import AsyncMarketApi
 from whitemarket._async.partner_token import AsyncPartnerTokenProvider
 from whitemarket._async.tokens import AsyncStaticAccessToken, AsyncTokenProvider, AsyncTokenStore
 from whitemarket._async.transport import AsyncGraphQLTransport, AsyncHttpClients
@@ -23,6 +25,9 @@ from whitemarket._runtime.endpoints import Endpoints, require_user_agent_suffix
 from whitemarket._runtime.secret import Secret
 from whitemarket._runtime.transport_config import TransportConfig, build_user_agent
 from whitemarket.config import DEFAULT_MAX_RESPONSE_BYTES, BuyReconciliation, Timeouts
+from whitemarket.exports.options import ExportOptions
+from whitemarket.live.async_session import AsyncLiveSession
+from whitemarket.live.options import LiveOptions, LiveTransport
 from whitemarket.retry import RetryPolicy
 
 ENV_PARTNER = "WHITEMARKET_PARTNER_TOKEN"
@@ -78,6 +83,7 @@ class AsyncWhiteMarketClient:
     request whose connection failed) and does not close it. TLS verification is always on.
 
     Use it as `async with` or call `aclose()`: that closes the HTTP clients the SDK created.
+    `exports` is the public export-file client (no authentication, its own HTTP client).
 
     Raises `ValueError` for an invalid combination or value and `TypeError` for a wrong type.
     """
@@ -137,6 +143,19 @@ class AsyncWhiteMarketClient:
             AsyncGraphQLExecutor(self._transport, AsyncBearerCredentials(provider, renew))
         )
         self.auth = AsyncAuthApi(provider, self.generated)
+        self._token_provider = provider
+        self._user_agent = config.user_agent
+        # The export side shares nothing with the credential: its own HTTP client, no token.
+        self.exports = AsyncExportClient(
+            options=ExportOptions(
+                base_url=self._endpoints.export_base_url,
+                connect_timeout=config.timeouts.connect,
+                retry=config.retry,
+                user_agent_suffix=user_agent_suffix,
+            ),
+            logger=logger,
+        )
+        self.market = AsyncMarketApi(self.generated)
 
     @classmethod
     def from_env(cls, **options: Unpack[AsyncClientOptions]) -> Self:
@@ -163,9 +182,25 @@ class AsyncWhiteMarketClient:
             options["base_url"] = base_url
         return cls(partner_token=token, **options)
 
+    def live(
+        self, transport: LiveTransport = LiveTransport.WS, options: LiveOptions | None = None
+    ) -> AsyncLiveSession:
+        """A live session (SDK_SPEC 3.11): `LiveTransport.WS` (default, needs the `live` extra)
+        or `LiveTransport.SSE`. Register handlers, then `connect()` or iterate; close it (or use
+        `async with`) when done. The session fetches a fresh access token before every connect."""
+        return AsyncLiveSession.create(
+            tokens=self._token_provider,
+            transport=transport,
+            ws_url=self._endpoints.ws_url,
+            sse_url=self._endpoints.sse_url,
+            user_agent=self._user_agent,
+            options=options,
+        )
+
     async def aclose(self) -> None:
         """Close the HTTP clients the SDK created (an injected one stays open)."""
         await self._clients.aclose()
+        await self.exports.aclose()
 
     async def __aenter__(self) -> Self:
         return self

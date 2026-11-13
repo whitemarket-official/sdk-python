@@ -41,6 +41,13 @@ unasync = pytest.importorskip("unasync", reason="tools/ is not part of this chec
         pytest.param("r.aiter_raw()", "r.iter_raw()", id="aiter_raw"),
         pytest.param("r.aiter_text()", "r.iter_text()", id="aiter_text"),
         pytest.param("r.aiter_lines()", "r.iter_lines()", id="aiter_lines"),
+        pytest.param(
+            "async for r in aiter_price_rows(c):", "for r in iter_price_rows(c):", id="aiter_price"
+        ),
+        pytest.param("aiter_product_rows(c, f)", "iter_product_rows(c, f)", id="aiter_product"),
+        pytest.param(
+            "await async_run_blocking(f, 1)", "run_blocking(f, 1)", id="async_run_blocking"
+        ),
         pytest.param("x = await anext(it)", "x = next(it)", id="anext"),
         pytest.param("it = aiter(x)", "it = iter(x)", id="aiter"),
         pytest.param("class _AsyncHelper: ...", "class _Helper: ...", id="_AsyncX private"),

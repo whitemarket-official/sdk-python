@@ -53,7 +53,11 @@ RULES: tuple[Rule, ...] = (
     _rule("asynccontextmanager", r"\Aasynccontextmanager\Z", "contextmanager"),
     _rule("aclose", r"\Aaclose\Z", "close"),
     _rule("aread", r"\Aaread\Z", "read"),
-    _rule("aiter_x", r"\Aaiter_(?=bytes\Z|text\Z|lines\Z|raw\Z)", "iter_"),
+    _rule(
+        "aiter_x",
+        r"\Aaiter_(?=bytes\Z|text\Z|lines\Z|raw\Z|price_rows\Z|product_rows\Z)",
+        "iter_",
+    ),
     _rule("anext", r"\Aanext\Z", "next"),
     _rule("aiter", r"\Aaiter\Z", "iter"),
     # AsyncX -> X and _AsyncX -> _X: AsyncGraphQLBase, httpx.AsyncClient, AsyncLock, ...

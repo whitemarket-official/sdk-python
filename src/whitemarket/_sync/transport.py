@@ -17,14 +17,14 @@ from typing import Protocol
 import httpx
 
 from whitemarket._concurrency import Deadline, sleep
-from whitemarket._runtime.body import BodyAccumulator, BodyError
+from whitemarket._runtime.body import BodyAccumulator, BodyError, body_is_gzip
 from whitemarket._runtime.http_errors import http_error_for
 from whitemarket._runtime.log_redaction import redact_headers, redact_url
 from whitemarket._runtime.operation import OperationType
 from whitemarket._runtime.secret import Secret
 from whitemarket._runtime.transport_config import TransportConfig
 from whitemarket.errors.base import TransportError
-from whitemarket.retry import RETRY_AFTER_STATUSES, parse_retry_after
+from whitemarket.retry import retry_after_for
 
 LOGGER_NAME = "whitemarket"
 _ERROR_BODY_BYTES = 1024 * 1024  # an error body is read up to what the redactor still handles
@@ -109,7 +109,7 @@ class TransportSeams:
     random: Callable[[], float] = _JITTER
 
 
-class _SafeLog:
+class SafeLog:
     """A logger that never lets its own failure change the outcome of a request."""
 
     def __init__(self, logger: logging.Logger) -> None:
@@ -122,6 +122,10 @@ class _SafeLog:
     def info(self, message: str, *args: object) -> None:
         with contextlib.suppress(Exception):
             self._logger.info(message, *args)
+
+    def warning(self, message: str, *args: object) -> None:
+        with contextlib.suppress(Exception):
+            self._logger.warning(message, *args)
 
 
 class GraphQLTransport:
@@ -137,7 +141,7 @@ class GraphQLTransport:
     ) -> None:
         self._clients = clients
         self._config = config
-        self._log = _SafeLog(logger or logging.getLogger(LOGGER_NAME))
+        self._log = SafeLog(logger or logging.getLogger(LOGGER_NAME))
         seams = seams or TransportSeams()
         self._clock = seams.clock
         self._sleeper = seams.sleeper
@@ -188,9 +192,7 @@ class GraphQLTransport:
             self._sleeper(delay)
 
     def _retry_after(self, reply: _Reply) -> int | None:
-        if reply.status not in RETRY_AFTER_STATUSES:
-            return None  # on every other status the header is ignored (SDK_SPEC 1.4)
-        return parse_retry_after(reply.retry_after_header, self._clock())
+        return retry_after_for(reply.status, reply.retry_after_header, self._clock())
 
     def _request_headers(
         self, operation_type: OperationType, secrets: Mapping[str, Secret]
@@ -251,14 +253,15 @@ class GraphQLTransport:
     def _read(self, response: httpx.Response, check: Callable[[], None]) -> _Reply:
         status = response.status_code
         ok = _SUCCESS_LOWER <= status <= _SUCCESS_UPPER
-        encoding = response.headers.get("content-encoding", "").strip().lower()
-        if encoding not in ("", "identity", "gzip", "x-gzip"):
+        try:
+            gzip = body_is_gzip(response.headers.get("content-encoding"))
+        except BodyError:
             if ok:
-                raise BodyError("the response has an unsupported content encoding")
+                raise
             return _Reply(status, response.headers.get("retry-after"), b"")
         accumulator = BodyAccumulator(
             limit=self._config.max_response_bytes if ok else _ERROR_BODY_BYTES,
-            gzip="gzip" in encoding,
+            gzip=gzip,
             truncate=not ok,
         )
         for chunk in response.iter_raw():

@@ -144,6 +144,13 @@ matrix: ## Unit tests on every supported Python version in Docker (python:<v>-sl
 			-v "$(CURDIR)":/app -w /app python:$$v-slim bash -c '$(MATRIX_RUN)' || exit 1; \
 	done
 
+## --- examples -----------------------------------------------------------------
+
+.PHONY: example
+example: ## Run an example against the real API: make example NAME=ws_products_feed (needs WHITEMARKET_PARTNER_TOKEN)
+	@test -n "$(NAME)" || { echo "usage: make example NAME=<file in examples/ without .py>"; exit 2; }
+	$(PY) examples/$(NAME).py
+
 ## --- agent tooling ------------------------------------------------------------
 
 .PHONY: hooks-test

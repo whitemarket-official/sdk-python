@@ -48,6 +48,9 @@ test = [
   "pytest-asyncio==1.5.0",
   "pytest-cov==7.1.0",
   "respx==0.23.1",
+  # The fake Centrifugo server of the live tests (tests/support/live_servers.py); the client side is
+  # centrifuge-python (extra `live`), which requires websockets>=15,<18. Tests only, never imported by src/.
+  "websockets==17.4",
 ]
 # GraphQL codegen tool, isolated in its own venv (`make install-codegen`): ariadne-codegen 0.19.0 requires
 # ruff>=0.15,<0.16, which conflicts with the ruff pin of `dev`.
@@ -115,6 +118,11 @@ select = [
 "src/whitemarket/_async/client.py" = ["PLR0913"]
 # PLR0913: the generated twin of the async client constructor above, see #0
 "src/whitemarket/_sync/client.py" = ["PLR0913"]
+# UP028: the generated sync twin of an async `for ...: yield` loop (async code cannot use `yield from`), see #0
+"src/whitemarket/_sync/pagination.py" = ["UP028"]
+# ASYNC109: `poll(timeout)` and `wait_for_deal_event(..., timeout)` are the SDK_SPEC 3.11 names and a deadline of the
+# whole call, not a per-await timeout. PLR0913: the session takes one keyword per injected part, see #0
+"src/whitemarket/live/**" = ["ASYNC109", "PLR0913"]
 
 # --- types -------------------------------------------------------------------
 
@@ -124,10 +132,17 @@ strict = true
 files = ["src"]
 warn_unreachable = true
 
+# centrifuge-python 0.7.0 ships annotations but no py.typed marker: mypy reads its source (ADR 0005), see #0
+[[tool.mypy.overrides]]
+module = ["centrifuge", "centrifuge.*"]
+follow_untyped_imports = true
+
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+# centrifuge-python 0.7.0 has no py.typed marker; pyright reads its annotated source (ADR 0005), see #0
+reportMissingTypeStubs = false
 
 # --- tests -------------------------------------------------------------------
 

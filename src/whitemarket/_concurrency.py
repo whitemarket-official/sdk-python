@@ -8,8 +8,9 @@ the plain names when it derives `_sync/`. Code under `_async/` must not import `
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from types import TracebackType
-from typing import Self
+from typing import ParamSpec, Self, TypeVar
 
 AsyncLock = asyncio.Lock
 Lock = threading.Lock
@@ -77,3 +78,17 @@ class Deadline:
     def check(self) -> None:
         if self._end is not None and time.monotonic() >= self._end:
             raise TimeoutError
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+async def async_run_blocking(func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
+    """Run a blocking call (file IO) without stopping the event loop: in a worker thread."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def run_blocking(func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
+    """The sync twin of `async_run_blocking`: the caller is already allowed to block."""
+    return func(*args, **kwargs)
