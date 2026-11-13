@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Generated code: collapsed in diffs, excluded from language stats
+/src/whitemarket/_generated/** linguist-generated=true
+# Sync client, generated from the async code by tools/unasync.py
+/src/whitemarket/_sync/** linguist-generated=true
+/schema/partner.* linguist-generated=true
+/graphql/operations/** linguist-generated=true
+/graphql/fragments/** linguist-generated=true
