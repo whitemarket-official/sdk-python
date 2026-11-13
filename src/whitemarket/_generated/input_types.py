@@ -471,7 +471,7 @@ class PersonStoreInput(BaseModel):
 class ProxyInput(BaseModel):
     """Input with proxy"""
 
-    value: str
+    value: str = Field(repr=False)
     "Steam Proxy @example http://user:pass@1.2.3.4:8080"
 
 
@@ -494,7 +494,7 @@ class ReferrerInput(BaseModel):
 class SteamApiKeyInput(BaseModel):
     """Input with person's steam api key"""
 
-    value: str
+    value: str = Field(repr=False)
     "Steam api key @example EFA057EC4F63D90112C8D1C00311E01E"
 
 

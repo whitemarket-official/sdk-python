@@ -22,9 +22,16 @@ def _key(key: object) -> str:
     return key
 
 
+# A request number is written out in full, so `Decimal("1E+999999999")` would be a gigabyte literal.
+# No money, wear or fade value comes near this.
+_MAX_EXPONENT = 1000
+
+
 def _finite(value: Decimal) -> Decimal:
     if not value.is_finite():
         raise ValueError("non-finite Decimal in a request")
+    if abs(value.adjusted()) > _MAX_EXPONENT:
+        raise ValueError(f"Decimal exponent beyond {_MAX_EXPONENT} in a request")
     return value
 
 
@@ -50,6 +57,8 @@ def to_plain(value: object) -> object:
     elif isinstance(value, Enum):
         result = to_plain(value.value)
     elif isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("a datetime in a request must be timezone-aware")
         result = value.isoformat()
     elif isinstance(value, BaseModel):
         result = to_plain(value.model_dump(by_alias=True, exclude_unset=True))
@@ -64,17 +73,21 @@ def to_plain(value: object) -> object:
 
 
 def encode(value: object) -> str:
-    """Serialise plain JSON data (see `to_plain`) compactly; a `Decimal` is a number literal."""
+    """Serialise request data compactly: `to_plain` first, then a `Decimal` is a number literal."""
+    return _dump(to_plain(value))
+
+
+def _dump(value: object) -> str:
+    """The text of plain data (what `to_plain` returns)."""
     if value is None or isinstance(value, bool | int | str):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, Decimal):
-        return format(_finite(value), "f")
-    if isinstance(value, float):
-        raise TypeError("float in a request: pass a Decimal")
+        return format(value, "f")
     if isinstance(value, Mapping):
-        items = cast("Mapping[object, object]", value).items()
-        pairs = (f"{json.dumps(_key(k), ensure_ascii=False)}:{encode(v)}" for k, v in items)
-        return "{" + ",".join(pairs) + "}"
-    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
-        return "[" + ",".join(encode(v) for v in cast("Sequence[object]", value)) + "]"
-    raise TypeError(f"cannot encode {type(value).__name__}")
+        items = cast("Mapping[str, object]", value).items()
+        return (
+            "{"
+            + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{_dump(v)}" for k, v in items)
+            + "}"
+        )
+    return "[" + ",".join(_dump(v) for v in cast("Sequence[object]", value)) + "]"

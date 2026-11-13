@@ -4,9 +4,8 @@
 from collections.abc import Mapping
 from typing import Protocol, cast
 
+from whitemarket._runtime.credential_format import is_valid_bearer_token
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.tokens import is_valid_bearer_token
-from whitemarket._sync.partner_token import PartnerTokenProvider
 from whitemarket._sync.tokens import TokenProvider
 
 AUTHORIZATION = "Authorization"
@@ -21,6 +20,12 @@ class Credentials(Protocol):
     ) -> Mapping[str, Secret] | None:
         """Headers for the one replay after a 401, or `None` when a replay cannot help."""
         ...
+
+
+class TokenRenewer(Protocol):
+    """Renews the access token a 401 rejected (`AsyncPartnerTokenProvider.refresh_rejected`)."""
+
+    def __call__(self, rejected: Secret) -> Secret: ...
 
 
 class PartnerTokenCredentials:
@@ -39,10 +44,15 @@ class PartnerTokenCredentials:
 
 
 class BearerCredentials:
-    """The provider's access token as `Authorization: Bearer`."""
+    """The provider's access token as `Authorization: Bearer`.
 
-    def __init__(self, provider: TokenProvider) -> None:
+    After a 401, `renew` (when given) replaces `provider.refresh()`: it gets the rejected token, so
+    a provider that coalesces renewals can skip the exchange when another caller already did it.
+    """
+
+    def __init__(self, provider: TokenProvider, renew: TokenRenewer | None = None) -> None:
         self._provider = provider
+        self._renew = renew
 
     def headers(self, operation_name: str) -> Mapping[str, Secret]:
         return _bearer(self._provider.access_token())
@@ -59,10 +69,7 @@ class BearerCredentials:
         rejected_header = rejected.get(AUTHORIZATION)
         token = self._provider.access_token()
         if _was_rejected(token, rejected_header):
-            if isinstance(self._provider, PartnerTokenProvider):
-                token = self._provider.refresh_rejected(token)
-            else:
-                token = self._provider.refresh()
+            token = self._renew(token) if self._renew else self._provider.refresh()
         if _was_rejected(token, rejected_header):
             return None
         return _bearer(token)

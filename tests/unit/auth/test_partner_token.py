@@ -17,7 +17,7 @@ from support.rigs import (
     is_auth_request,
     token_answer,
 )
-from whitemarket import Secret, StoredToken
+from whitemarket import RetryPolicy, Secret, StoredToken
 from whitemarket.errors import AuthenticationError, DecodeError, ServiceUnavailableError
 
 AUTH_ENDPOINT_QUERY = "auth_token"
@@ -366,3 +366,27 @@ def test_a_custom_provider_value_that_is_not_a_bearer_token_is_refused_and_nothi
 
     assert script.count == 0
     assert bad.strip() == "" or bad not in str(caught.value)
+
+
+def test_the_401_replay_starts_a_fresh_attempt_budget_as_the_php_sdk_does(
+    flavor: Flavor, stacks: list[Stack]
+) -> None:
+    """Pins parity with PHP `GraphQLExecutor::postWithOneReplay`: the replay is a second
+    `transport.post`, so a query can send up to 2 x max_attempts requests (3 + 3 here). Whether the
+    budget should be shared across the replay is an open question for SDK_SPEC 1.4."""
+    api_answers = [reply(503), reply(503), reply(401), reply(503), reply(503), reply(503)]
+    sent: list[int] = []
+    make_token = fresh_token()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if is_auth_request(request):
+            return token_answer(make_token()).build()
+        sent.append(1)
+        return api_answers[len(sent) - 1].build()
+
+    stack = build(stacks, flavor, handler, retry=RetryPolicy(max_attempts=3, base_delay=0))
+
+    with pytest.raises(ServiceUnavailableError):
+        stack.query()
+
+    assert len(sent) == 6

@@ -124,6 +124,20 @@ def test_the_raw_execute_infers_the_type_so_a_mutation_is_never_retried(make: An
     assert q.script.count == 2, "a clear query is retried"
 
 
+def test_a_mutation_document_labelled_a_query_is_still_sent_once(make: Any) -> None:
+    """Rule 2: no caller can make a mutation retryable by declaring it a query."""
+    m = make(reply(503), data(market_lifetime_all=True), access_token=ACCESS)
+
+    with pytest.raises(ServiceUnavailableError):
+        m.call(
+            m.client.generated.execute(
+                "mutation M { market_lifetime_all(value: 600) }", operation_type="query"
+            )
+        )
+
+    assert m.script.count == 1
+
+
 def test_a_fixed_access_token_needs_no_exchange_and_is_not_refreshed(make: Any) -> None:
     m = make(data(test_ping="pong"), reply(401), access_token=ACCESS)
 
@@ -292,15 +306,15 @@ def test_the_smallest_valid_options_are_accepted(make: Any) -> None:
         max_response_bytes=1,
     )
 
-    assert m.client.buy_reconciliation.delay == 10
+    assert m.client._buy_reconciliation.delay == 10
     assert BuyReconciliation(delay=20).delay == 20
 
 
 def test_defaults(make: Any) -> None:
     m = make(partner_token=P)
 
-    assert m.client.endpoints.graphql_url == "https://api.white.market/graphql/partner"
-    assert m.client.buy_reconciliation == BuyReconciliation(delay=15, attempts=3, interval=5)
+    assert m.client._endpoints.graphql_url == "https://api.white.market/graphql/partner"
+    assert m.client._buy_reconciliation == BuyReconciliation(delay=15, attempts=3, interval=5)
     assert Timeouts() == Timeouts(connect=10, request=30)
     assert RetryPolicy() == RetryPolicy(3, 0.5, 2.0, 30.0)
 
@@ -354,7 +368,7 @@ def test_from_env_reads_the_partner_token(env: pytest.MonkeyPatch, flavor: Flavo
     flavor.close(http)
 
     assert script.requests[0].headers["x-partner-token"] == "ENV-PARTNER"
-    assert client.endpoints.base_url == "https://api.white.market"
+    assert client._endpoints.base_url == "https://api.white.market"
 
 
 def test_from_env_lets_the_base_url_replace_the_option_and_forwards_the_others(
@@ -368,8 +382,8 @@ def test_from_env_lets_the_base_url_replace_the_option_and_forwards_the_others(
         base_url="https://option.test", buy_reconciliation=reconciliation, graphql_path="/g"
     )
 
-    assert client.endpoints.graphql_url == "https://env.test/g"
-    assert client.buy_reconciliation is reconciliation
+    assert client._endpoints.graphql_url == "https://env.test/g"
+    assert client._buy_reconciliation is reconciliation
 
 
 def test_an_empty_base_url_in_the_environment_is_ignored(
@@ -380,7 +394,7 @@ def test_an_empty_base_url_in_the_environment_is_ignored(
 
     client = flavor.cls("client", "WhiteMarketClient").from_env(base_url="https://option.test")
 
-    assert client.endpoints.base_url == "https://option.test"
+    assert client._endpoints.base_url == "https://option.test"
 
 
 @pytest.mark.parametrize(
@@ -473,3 +487,13 @@ def test_the_default_http_clients_never_follow_redirects_and_use_the_timeouts(
         assert client._clients.mutation is not client._clients.query
     finally:
         _enter_exit(flavor, client)
+
+
+def test_from_env_options_are_every_constructor_option_but_the_credentials(flavor: Flavor) -> None:
+    options = set(flavor.cls("client", "ClientOptions").__annotations__)
+    constructor = inspect.signature(flavor.cls("client", "WhiteMarketClient").__init__).parameters
+    credentials = {"partner_token", "access_token", "token_provider"}
+
+    keywords = {name for name in constructor if name != "self"}
+
+    assert options == keywords - credentials, "a new option must be forwarded by from_env too"

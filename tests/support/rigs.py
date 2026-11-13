@@ -10,7 +10,7 @@ import httpx
 
 from support.flavors import Flavor, jwt
 from support.http import Script, data, json_response
-from whitemarket import RetryPolicy, Secret
+from whitemarket import RetryPolicy
 from whitemarket._runtime.transport_config import TransportConfig
 
 URL = "https://api.test/graphql/partner"
@@ -88,23 +88,27 @@ class Stack:
         clients = flavor.cls("transport", "HttpClients")(self.http, self.http, owned=False)
         config = TransportConfig(graphql_url=URL, retry=retry or RetryPolicy(base_delay=0))
         self.transport = flavor.cls("transport", "GraphQLTransport")(
-            clients, config, clock=self.clock, sleeper=flavor.sleeper([]), random=lambda: 0.0
+            clients,
+            config,
+            seams=flavor.cls("transport", "TransportSeams")(
+                clock=self.clock, sleeper=flavor.sleeper([]), random=lambda: 0.0
+            ),
         )
-        executor_cls = flavor.cls("graphql", "GraphQLExecutor")
-        creds = flavor.cls("credentials", "PartnerTokenCredentials")(Secret(PARTNER))
-        auth_executor = executor_cls(self.transport, creds)
         self.store = store or flavor.cls("tokens", "InMemoryTokenStore")()
-        self.partner = flavor.cls("partner_token", "PartnerTokenProvider")(
-            auth_executor, store=self.store, clock=self.clock
+        # The wiring of the real client (`build_provider`), on the transport above.
+        build_provider = flavor.attr("client", "build_provider")
+        credentials: dict[str, Any] = {"partner": {"partner_token": PARTNER}}
+        credentials["static"] = {"access_token": token or ""}
+        credentials["custom"] = {"token_provider": provider}
+        self.provider, renew = build_provider(
+            self.transport,
+            **credentials[credential],
+            token_store=self.store if credential == "partner" else None,
+            clock=self.clock,
         )
-        if credential == "static":
-            self.provider = flavor.cls("tokens", "StaticAccessToken")(Secret(token or ""))
-        elif credential == "custom":
-            self.provider = provider
-        else:
-            self.provider = self.partner
-        bearer = flavor.cls("credentials", "BearerCredentials")(self.provider)
-        self.executor = executor_cls(self.transport, bearer)
+        self.partner = self.provider if credential == "partner" else None
+        bearer = flavor.cls("credentials", "BearerCredentials")(self.provider, renew)
+        self.executor = flavor.cls("graphql", "GraphQLExecutor")(self.transport, bearer)
 
     def run(self, result: Any) -> Any:
         return self.flavor.run(result)

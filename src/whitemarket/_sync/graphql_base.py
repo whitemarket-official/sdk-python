@@ -8,8 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from whitemarket._runtime.decode import decode_error_from
 from whitemarket._runtime.json_codec import to_plain
-from whitemarket._runtime.operation import OperationType
-from whitemarket._runtime.raw_document import infer_operation_type
+from whitemarket._runtime.operation import OperationType, infer_operation_type
 from whitemarket._sync.executor import OperationExecutor
 
 _Model = TypeVar("_Model", bound=BaseModel)

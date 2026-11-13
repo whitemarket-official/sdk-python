@@ -1,15 +1,19 @@
 """Runs one GraphQL operation over the transport and maps the answer (SDK_SPEC 1.4, 1.5)."""
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from whitemarket._async.credentials import AsyncCredentials
 from whitemarket._async.transport import AsyncGraphQLTransport
 from whitemarket._runtime import json_codec
-from whitemarket._runtime.operation import OperationType
+from whitemarket._runtime.operation import OperationType, effective_operation_type
 from whitemarket.errors.base import DecodeError
 from whitemarket.errors.graphql import GraphQLError
 from whitemarket.errors.http import AuthenticationError
+
+# Root fields whose answer carries a credential (a JWT, a proxy URL that may hold a password). They
+# never reach `GraphQLError.partial_data`, which is raw server data and not redacted.
+_CREDENTIAL_FIELDS: Final = frozenset({"auth_token", "auth_steam_jwt", "profile_steam_proxy_get"})
 
 
 class AsyncGraphQLExecutor:
@@ -18,6 +22,8 @@ class AsyncGraphQLExecutor:
     A 401 refreshes the credentials once and replays the request once, mutations included: the
     JWT check runs before the resolver, so a 401 means the request was not executed (SDK_SPEC 1.4,
     the one exception to "a mutation is never retried"). A second 401 is an `AuthenticationError`.
+    The replay is a second `transport.post` with its own retry budget, as in the PHP SDK
+    (docs/DEVIATIONS.md, Accepted limitations).
     """
 
     def __init__(self, transport: AsyncGraphQLTransport, credentials: AsyncCredentials) -> None:
@@ -33,6 +39,8 @@ class AsyncGraphQLExecutor:
     ) -> dict[str, Any]:
         body = _encode(document, operation_name, variables)
         name = operation_name or ""
+        # Whatever the caller declared, a document that is not clearly a query is never retried.
+        operation_type = effective_operation_type(document, operation_type)
         response = await self._post_with_one_replay(name, operation_type, body)
         return _data_or_raise(response)
 
@@ -87,8 +95,15 @@ def _data_or_raise(body: bytes) -> dict[str, Any]:
         raise DecodeError("expected a list", ("errors",))
     if errors:
         raise GraphQLError.from_payload(
-            cast("list[object]", errors), cast("dict[str, Any] | None", data)
+            cast("list[object]", errors), _without_credentials(cast("dict[str, Any] | None", data))
         )
     if data is None:
         raise DecodeError("missing in a response without errors", ("data",))
     return cast("dict[str, Any]", data)
+
+
+def _without_credentials(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    if data is None:
+        return None
+    kept = {name: value for name, value in data.items() if name not in _CREDENTIAL_FIELDS}
+    return kept or None

@@ -14,6 +14,13 @@ class Speed(UnknownTolerantEnum):
     FAST = "FAST"
 
 
+class Color(UnknownTolerantEnum):
+    """Like CatalogColor and SteamApp: the schema itself declares an UNKNOWN member."""
+
+    RED = "RED"
+    UNKNOWN = "UNKNOWN"
+
+
 class Car(BaseModel):
     speed: Speed
 
@@ -40,6 +47,23 @@ def test_unknown_members_with_the_same_raw_value_are_equal_and_hash_alike() -> N
     assert hash(Speed("WARP")) == hash(Speed("WARP"))
     assert Speed("WARP") != Speed("LUDICROUS")
     assert Speed("WARP") != Speed.FAST
+
+
+def test_a_declared_unknown_member_is_not_reported_as_an_unknown_value() -> None:
+    declared = Color("UNKNOWN")
+
+    assert declared is Color.UNKNOWN
+    assert not declared.is_unknown, "the server sent a value the snapshot knows"
+
+
+def test_a_new_value_of_an_enum_that_declares_unknown_is_told_apart_from_it() -> None:
+    new = Color("MAUVE")
+
+    assert new.is_unknown
+    assert new.value == "MAUVE"
+    assert new is not Color.UNKNOWN
+    assert new != Color.UNKNOWN
+    assert new not in list(Color)
 
 
 @pytest.mark.parametrize("bad", [5, None, 1.5, ["SLOW"]])
@@ -96,3 +120,34 @@ def test_a_model_instance_is_routed_by_its_typename_attribute() -> None:
     dog = Dog.model_validate({"__typename": "Dog", "bark": "woof"})
 
     assert TypeAdapter(Pet).validate_python(dog) is dog
+
+
+def test_unknown_values_decode_inside_optional_lists_of_optional_enums() -> None:
+    class Garage(BaseModel):
+        speeds: list[Speed | None] | None = None
+
+    garage = Garage.model_validate({"speeds": ["SLOW", None, "WARP"]})
+
+    assert garage.speeds is not None
+    assert [s.value if s else None for s in garage.speeds] == ["SLOW", None, "WARP"]
+    assert garage.speeds[2] is not None
+    assert garage.speeds[2].is_unknown
+    assert Garage.model_validate({"speeds": None}).speeds is None
+    assert Garage.model_validate({"speeds": ["WARP"]}).model_dump(mode="json") == {
+        "speeds": ["WARP"]
+    }
+
+
+def test_a_list_of_unions_keeps_its_known_members_and_decodes_an_unknown_one() -> None:
+    adapter = TypeAdapter(list[Pet])
+
+    pets = adapter.validate_python(
+        [
+            {"__typename": "Dog", "bark": "woof"},
+            {"__typename": "Cat"},
+            {"__typename": "Dog", "bark": "arf"},
+        ]
+    )
+
+    assert [type(p) for p in pets] == [Dog, Animal, Dog]
+    assert pets[1].typename__ == "Cat"

@@ -90,9 +90,20 @@ def test_the_rule_table_has_one_rule_per_construct_and_unique_names() -> None:
     names = [rule.name for rule in unasync.RULES]
 
     assert len(names) == len(set(names))
-    assert {"async def", "async with", "async for", "await", "AsyncX", "async_x", "_async"} <= set(
-        names
-    )
+    assert {"AsyncX", "async_x", "_async", "aclose", "__aenter__"} <= set(names)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("async def f(): ...\n", "def f(): ...\n", id="async def"),
+        pytest.param("async with a as b: ...\n", "with a as b: ...\n", id="async with"),
+        pytest.param("async for a in b: ...\n", "for a in b: ...\n", id="async for"),
+        pytest.param("x = await f()\n", "x = f()\n", id="await"),
+    ],
+)
+def test_the_keywords_async_and_await_are_removed(source: str, expected: str) -> None:
+    assert unasync.rewrite(source) == expected
 
 
 @pytest.mark.parametrize(

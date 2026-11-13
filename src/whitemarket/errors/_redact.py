@@ -19,9 +19,11 @@ import json
 import re
 from typing import Final, cast
 
+from whitemarket._runtime.secret import MASK
+
 EXCERPT_BYTES: Final = 512
 
-_MASK: Final = b"***"
+_MASK: Final = MASK.encode()
 _JSON_MAX_BYTES: Final = 1024 * 1024
 _JSON_MAX_DEPTH: Final = 64
 _INT64_MIN: Final = -(2**63)
@@ -161,7 +163,7 @@ def _redact_value(value: object) -> object:
         redacted: dict[str, object] = {}
         for key, item in cast("dict[str, object]", value).items():
             name, marked = _cut_at_first_marker(_strict_utf8(key))
-            redacted[_lossy_text(name)] = "***" if marked else _redact_value(item)
+            redacted[_lossy_text(name)] = MASK if marked else _redact_value(item)
         return redacted
     return value
 

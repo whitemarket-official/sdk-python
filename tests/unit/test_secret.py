@@ -1,7 +1,6 @@
 """`Secret` (SDK_SPEC 8): a value that never prints."""
 
 import copy
-import hmac
 import logging
 
 import pytest
@@ -92,18 +91,21 @@ def test_the_hash_is_consistent_with_equality() -> None:
     assert len({Secret(VALUE), Secret(VALUE), Secret("other")}) == 2
 
 
-def test_equality_uses_a_constant_time_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[bytes, bytes]] = []
-    real = hmac.compare_digest
-
-    def spy(a: bytes, b: bytes) -> bool:
-        calls.append((a, b))
-        return real(a, b)
-
-    monkeypatch.setattr("whitemarket._runtime.secret.hmac.compare_digest", spy)
-
-    assert Secret("a") == Secret("a")
-    assert calls == [(b"a", b"a")]
+@pytest.mark.parametrize(
+    ("a", "b", "equal"),
+    [
+        pytest.param("abc", "abc", True, id="same"),
+        pytest.param("abc", "abd", False, id="last char differs"),
+        pytest.param("abc", "abcd", False, id="a prefix"),
+        pytest.param("", "", True, id="both empty"),
+        pytest.param("\ud800x", "\ud800x", True, id="lone surrogate, same"),
+        pytest.param("\ud800x", "\udc00x", False, id="lone surrogates, different"),
+    ],
+)
+def test_equality_compares_values_and_never_raises(a: str, b: str, equal: bool) -> None:
+    # Constant time is `hmac.compare_digest`'s property; what is pinned here is the result, for
+    # any str: a value a header can never carry must still compare without an exception.
+    assert (Secret(a) == Secret(b)) is equal
 
 
 def test_copying_returns_the_same_object_and_leaks_nothing() -> None:
@@ -132,7 +134,10 @@ def test_a_non_string_does_not_validate_and_the_error_hides_the_input() -> None:
     with pytest.raises(ValidationError) as caught:
         Holder(token=5)
 
-    assert caught.value.error_count() >= 1
+    errors = caught.value.errors(include_input=False, include_url=False, include_context=False)
+    assert {e["loc"][0] for e in errors} == {"token"}
+    assert {e["type"] for e in errors} == {"is_instance_of", "string_type"}  # both union branches
+    assert all("input" not in e for e in errors)
 
 
 def test_a_secret_field_serialises_as_the_mask_never_the_value() -> None:

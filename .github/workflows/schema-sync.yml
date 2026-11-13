@@ -94,20 +94,26 @@ jobs:
           PASSED: ${{ steps.check.outputs.passed }}
           BREAKING: ${{ steps.diff.outputs.breaking }}
         run: |
+          # Text that came from the server or from logs: no `@mention` (GitHub notifies the account) and no line
+          # that could close the fence it is printed in.
+          sanitize() { sed -e 's/@/(at)/g' -e 's/^[[:space:]]*~~~/ (fence)/'; }
           {
             echo "Automated sync of the public partner schema (\`https://api.white.market/graphql/partner\`)."
             echo
             if [ "$PASSED" != "true" ]; then
               echo "> **make check failed.** This PR is a draft so a human sees the schema change. Last lines:"
               echo
-              echo '```'
-              tail -n 30 "$RUNNER_TEMP/check.log" 2>/dev/null || echo "(no log)"
-              echo '```'
+              echo '~~~~~~~~'
+              tail -n 30 "$RUNNER_TEMP/check.log" 2>/dev/null | sanitize || echo "(no log)"
+              echo '~~~~~~~~'
               echo
             fi
             echo "Breaking changes: \`$BREAKING\`"
             echo
-            cat "$RUNNER_TEMP/summary.md"
+            # Derived from the server's schema text: shown as an inert block, `@name` can never notify anyone.
+            echo '~~~~~~~~'
+            sanitize < "$RUNNER_TEMP/summary.md"
+            echo '~~~~~~~~'
             echo
             echo "### Regenerated files"
             echo
@@ -124,7 +130,7 @@ jobs:
         if: steps.fetch.outputs.changed == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/schema-sync"
-          git add -A -- schema graphql src/whitemarket/_generated
+          git add -A -- schema graphql src/whitemarket/_generated src/whitemarket/_sync
           git diff --cached --binary > "$RUNNER_TEMP/schema-sync/changes.patch"
           cp "$RUNNER_TEMP/pr-body.md" "$RUNNER_TEMP/schema-sync/pr-body.md"
 
@@ -159,9 +165,9 @@ jobs:
       - name: Apply the patch
         run: |
           git apply --binary "$RUNNER_TEMP/schema-sync/changes.patch"
-          unexpected=$(git status --porcelain --untracked-files=all | cut -c4- | grep -vE '^(schema|graphql|src/whitemarket/_generated)/' || true)
+          unexpected=$(git status --porcelain --untracked-files=all | cut -c4- | grep -vE '^(schema|graphql|src/whitemarket/_generated|src/whitemarket/_sync)/' || true)
           if [ -n "$unexpected" ]; then
-            echo "::error::the patch touches paths outside schema/, graphql/, src/whitemarket/_generated/"
+            echo "::error::the patch touches paths outside schema/, graphql/, src/whitemarket/_generated/, src/whitemarket/_sync/"
             echo "$unexpected"
             exit 1
           fi
@@ -184,3 +190,4 @@ jobs:
             schema/**
             graphql/**
             src/whitemarket/_generated/**
+            src/whitemarket/_sync/**

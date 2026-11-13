@@ -25,4 +25,8 @@ class UnknownTolerantEnum(StrEnum):
 
     @property
     def is_unknown(self) -> bool:
-        return self._name_ == UNKNOWN_NAME
+        """True for a value the snapshot does not know, also in an enum that declares `UNKNOWN`.
+
+        A declared member is the one in `__members__`; a pseudo-member made by `_missing_` is not.
+        """
+        return type(self).__members__.get(self._name_) is not self

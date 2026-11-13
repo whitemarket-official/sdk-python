@@ -43,9 +43,13 @@ from graphql import (
 RUNTIME = "whitemarket._runtime"
 # SDK_SPEC 8: a string field whose name holds one of these, in any case, decodes into Secret.
 CREDENTIAL = re.compile(
-    r"token|secret|passw|authori[sz]ation|cookie|api_key|api-key|apikey|jwt|credential",
+    r"token|secret|passw|authori[sz]ation|cookie|api_key|api-key|apikey|jwt|credential|proxy",
     re.IGNORECASE,
 )
+# `proxy` is no SDK_SPEC 8 marker, but a proxy URL may hold `user:pass@` (profile_steam_proxy_get).
+# Input objects whose generic `value` field holds a credential (a proxy URL, a Steam API key): the
+# field is kept out of `repr`, so a logged model never shows it. The name gives no hint: a list.
+SECRET_INPUT_FIELDS = {"ProxyInput": "value", "SteamApiKeyInput": "value"}
 EXCLUDED_INPUT_SCALARS = frozenset({"FileUpload"})
 UNKNOWN_TAG = "__unknown__"
 HEADER = (
@@ -364,6 +368,15 @@ class WhiteMarketPlugin(Plugin):
                 continue
             body.append(stmt)
         class_def.body = body
+        secret_field = SECRET_INPUT_FIELDS.get(input_type.name)
+        for stmt in class_def.body:
+            if (
+                secret_field is not None
+                and isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+                and stmt.target.id == secret_field
+            ):
+                _add_field_keyword(stmt, "repr", ast.Constant(False))
         return class_def
 
     def generate_inputs_module(self, module: ast.Module) -> ast.Module:
@@ -462,8 +475,14 @@ def _fix_result_imports(module: ast.Module, *, used_typename: bool) -> None:
 
 
 def _mark_deprecated(field_implementation: ast.AnnAssign, reason: str) -> None:
+    _add_field_keyword(field_implementation, "deprecated", ast.Constant(reason))
+
+
+def _add_field_keyword(field_implementation: ast.AnnAssign, name: str, argument: ast.expr) -> None:
+    """`x: T` or `x: T = d` becomes `x: T = Field(default=d, <name>=<argument>)`; an existing
+    `Field(...)` gets the keyword."""
     value = field_implementation.value
-    marker = ast.keyword(arg="deprecated", value=ast.Constant(reason))
+    marker = ast.keyword(arg=name, value=argument)
     if (
         isinstance(value, ast.Call)
         and isinstance(value.func, ast.Name)

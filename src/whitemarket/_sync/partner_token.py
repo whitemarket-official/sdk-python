@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 
 from whitemarket._concurrency import Lock
 from whitemarket._generated.sync_client import GeneratedClient
+from whitemarket._runtime.credential_format import is_valid_bearer_token
 from whitemarket._runtime.jwt import token_expiry
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.tokens import is_valid_bearer_token
 from whitemarket._sync.executor import OperationExecutor
 from whitemarket._sync.tokens import InMemoryTokenStore, TokenStore
 from whitemarket.errors.base import DecodeError
@@ -37,38 +37,43 @@ class PartnerTokenProvider:
         executor: OperationExecutor,
         *,
         store: TokenStore | None = None,
-        clock: Callable[[], datetime] = _utc_now,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         # `executor` authenticates with the Partner Token (`AsyncPartnerTokenCredentials`).
         self._exchange_client = GeneratedClient(executor)
         self._store: TokenStore = store if store is not None else InMemoryTokenStore()
-        self._clock = clock
+        self._clock = clock or _utc_now
         self._lock = Lock()
-        self._generation = 0
+        self._generation = 0  # counts finished exchanges, failed ones too
+        self._outcome: Secret | Exception | None = None
 
     def access_token(self) -> Secret:
+        seen = self._generation
         cached = self._cached()
         if cached is not None:
             return cached
         with self._lock:
-            cached = self._cached()  # another caller may have exchanged while we waited
+            if self._generation != seen:
+                return self._shared_outcome()
+            cached = self._cached()  # a worker sharing the store may have exchanged
             if cached is not None:
                 return cached
             return self._exchange()
 
     def refresh(self) -> Secret:
-        """Force an exchange. Callers that wait while another exchange runs share its result."""
+        """Force an exchange. Callers that wait while another exchange runs share its outcome."""
         seen = self._generation
         with self._lock:
             if self._generation != seen:
-                cached = self._cached()
-                if cached is not None:
-                    return cached
+                return self._shared_outcome()
             return self._exchange()
 
     def refresh_rejected(self, rejected: Secret) -> Secret:
         """Exchange unless the store already holds a token other than the rejected one."""
+        seen = self._generation
         with self._lock:
+            if self._generation != seen:
+                return self._shared_outcome()
             current = self._cached()
             if current is not None and current != rejected:
                 return current
@@ -86,12 +91,36 @@ class PartnerTokenProvider:
             return stored.token
         return None
 
+    def _shared_outcome(self) -> Secret:
+        """The result of the exchange that finished while this caller waited for the lock.
+
+        A failure is shared too: `auth_token` is rate limited, so N waiters must not each repeat
+        an exchange that just failed. A caller that arrives after it finished exchanges by itself.
+        """
+        outcome = self._outcome
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome is None:
+            raise RuntimeError("an exchange finished without an outcome")
+        return outcome
+
     def _exchange(self) -> Secret:
+        """One `auth_token` call (lock held); its outcome is kept for the callers queued behind."""
+        try:
+            token = self._fetch_and_store()
+        except Exception as error:  # a cancellation is not an outcome the waiters should share
+            self._outcome = error
+            self._generation += 1
+            raise
+        self._outcome = token
+        self._generation += 1
+        return token
+
+    def _fetch_and_store(self) -> Secret:
         token = (self._exchange_client.auth_token()).auth_token.access_token
         if not is_valid_bearer_token(token.reveal()):
             raise DecodeError("not a valid bearer token", ("auth_token", "accessToken"))
         now = self._clock()
         expires_at = max(token_expiry(token.reveal(), now), now + MIN_LIFETIME)
         self._store.set(token, expires_at)
-        self._generation += 1
         return token

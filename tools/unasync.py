@@ -5,8 +5,9 @@ Usage (from the repository root; `make codegen` runs it, do not call it by hand)
     python tools/unasync.py [--check] --tree SRC DST     # every *.py of a tree, stale files removed
     python tools/unasync.py [--check] --file SRC DST     # one file
 
-The rules are the explicit table `RULES` below, applied in order to every NAME token (comments and
-prose are not touched; a string that is only a name or type expression is renamed too).
+The rules are the explicit table `RULES` below, applied in order to every NAME token, plus the
+keywords `async` and `await`, which are deleted (comments and prose are not touched; a string that
+is only a name or type expression is renamed too).
 Afterwards the result is scanned for tokens that must not survive in sync code (`async`, `await`,
 `asyncio`, `Async...`): such a token means the async source used something the table does not
 know, and the run fails instead of emitting broken code. Async source gets its primitives from
@@ -41,13 +42,9 @@ def _rule(name: str, pattern: str, replacement: str) -> Rule:
     return Rule(name, re.compile(pattern), replacement)
 
 
-# Applied to every NAME token (never to comments or prose in strings), in order. `async` and `await`
-# are keywords handled apart: the token and the blank after it are deleted.
+# Applied to every NAME token (never to comments or prose in strings), in order. The keywords
+# `async` and `await` have no rule: `_KEYWORDS` below deletes the token and the blank after it.
 RULES: tuple[Rule, ...] = (
-    _rule("async def", r"\Aasync\Z", ""),
-    _rule("async with", r"\Aasync\Z", ""),
-    _rule("async for", r"\Aasync\Z", ""),
-    _rule("await", r"\Aawait\Z", ""),
     _rule("__aenter__", r"\A__aenter__\Z", "__enter__"),
     _rule("__aexit__", r"\A__aexit__\Z", "__exit__"),
     _rule("__aiter__", r"\A__aiter__\Z", "__iter__"),
@@ -87,8 +84,6 @@ class UnasyncError(Exception):
 def _rename(name: str) -> str:
     """The sync spelling of one identifier (keywords are not handled here)."""
     for rule in RULES:
-        if rule.name in ("async def", "async with", "async for", "await"):
-            continue
         name = rule.pattern.sub(rule.replacement, name)
     return name
 

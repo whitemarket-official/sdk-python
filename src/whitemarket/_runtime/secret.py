@@ -1,12 +1,12 @@
 """`Secret`: a string that never prints its value (SDK_SPEC 8)."""
 
 import hmac
-from typing import Any, NoReturn, Self, cast, final
+from typing import Any, Final, NoReturn, Self, cast, final
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
-_MASK = "***"
+MASK: Final = "***"
 
 
 @final
@@ -46,18 +46,21 @@ class Secret:
         raise AttributeError("Secret is immutable")
 
     def __repr__(self) -> str:
-        return _MASK
+        return MASK
 
     def __str__(self) -> str:
-        return _MASK
+        return MASK
 
     def __format__(self, format_spec: str) -> str:
-        return _MASK
+        return MASK
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Secret):
             return NotImplemented
-        return hmac.compare_digest(self._value.encode(), other._value.encode())
+        # surrogatepass: a lone surrogate is a valid `str`; it must compare, not raise.
+        return hmac.compare_digest(
+            self._value.encode(errors="surrogatepass"), other._value.encode(errors="surrogatepass")
+        )
 
     def __hash__(self) -> int:
         return hash(self._value)
@@ -83,5 +86,5 @@ class Secret:
                     core_schema.no_info_after_validator_function(cls, core_schema.str_schema()),
                 ]
             ),
-            serialization=core_schema.plain_serializer_function_ser_schema(lambda _: _MASK),
+            serialization=core_schema.plain_serializer_function_ser_schema(lambda _: MASK),
         )

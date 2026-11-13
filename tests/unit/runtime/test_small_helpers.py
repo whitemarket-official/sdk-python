@@ -3,9 +3,9 @@
 import pytest
 
 from whitemarket._runtime import endpoints
+from whitemarket._runtime.credential_format import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.log_redaction import redact_headers, redact_url
-from whitemarket._runtime.raw_document import infer_operation_type
-from whitemarket._runtime.tokens import is_valid_bearer_token, is_valid_header_value
+from whitemarket._runtime.operation import infer_operation_type
 
 
 @pytest.mark.parametrize(
@@ -122,6 +122,8 @@ def test_a_base_url_moves_the_derived_live_urls_and_drops_a_trailing_slash() -> 
         pytest.param({"graphql_path": "graphql"}, id="path without slash"),
         pytest.param({"graphql_path": "/g?x=1"}, id="path with a query"),
         pytest.param({"export_base_url": "http://export.example"}, id="plain http export"),
+        pytest.param({"sse_url": ""}, id="empty sse url"),
+        pytest.param({"ws_url": ""}, id="empty ws url"),
         pytest.param({"sse_url": "http://api.example/sse"}, id="plain http sse"),
         pytest.param({"ws_url": "ws://api.example/ws"}, id="plain ws"),
         pytest.param({"ws_url": "https://api.example/ws"}, id="https as ws"),

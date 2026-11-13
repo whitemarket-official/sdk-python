@@ -9,7 +9,8 @@ from collections.abc import Mapping
 from typing import Final
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-REDACTED: Final = "***"
+from whitemarket._runtime.secret import MASK
+
 _SAFE_HEADERS: Final = frozenset(
     {
         "accept",
@@ -27,8 +28,7 @@ _SAFE_HEADERS: Final = frozenset(
 def redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Headers with the value of every name outside the allow-list replaced by `***`."""
     return {
-        name: value if name.lower() in _SAFE_HEADERS else REDACTED
-        for name, value in headers.items()
+        name: value if name.lower() in _SAFE_HEADERS else MASK for name, value in headers.items()
     }
 
 
@@ -37,7 +37,7 @@ def redact_url(url: str) -> str:
     try:
         parts = urlsplit(url)
     except ValueError:
-        return REDACTED
+        return MASK
     host = parts.hostname or ""
     if ":" in host:
         host = f"[{host}]"
@@ -47,7 +47,7 @@ def redact_url(url: str) -> str:
         port = None
     netloc = f"{host}:{port}" if port is not None else host
     query = "&".join(
-        f"{pair.partition('=')[0]}={REDACTED}" if "=" in pair else pair
+        f"{pair.partition('=')[0]}={MASK}" if "=" in pair else pair
         for pair in parts.query.split("&")
         if pair
     )

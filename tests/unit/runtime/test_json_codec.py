@@ -75,6 +75,41 @@ def test_to_plain_converts_enums_datetimes_and_lists() -> None:
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(datetime.fromisoformat("2026-01-02T03:04:05"), id="naive datetime"),
+        pytest.param(
+            [datetime.fromisoformat("2026-01-02T00:00:00")], id="naive datetime in a list"
+        ),
+    ],
+)
+def test_to_plain_refuses_a_naive_datetime(value: object) -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        to_plain(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "refused"),
+    [
+        pytest.param(Decimal("1E+1000"), False, id="exponent 1000 is the largest accepted"),
+        pytest.param(Decimal("1E+1001"), True, id="exponent 1001"),
+        pytest.param(Decimal("1E-1000"), False, id="exponent -1000 is the largest accepted"),
+        pytest.param(Decimal("1E-1001"), True, id="exponent -1001"),
+        pytest.param(Decimal("0E+1001"), True, id="zero with a huge exponent"),
+        pytest.param(Decimal("1E+9999999"), True, id="would be a 10 MB literal"),
+    ],
+)
+def test_a_decimal_with_a_huge_exponent_is_refused_not_expanded(
+    value: Decimal, refused: bool
+) -> None:
+    if refused:
+        with pytest.raises(ValueError, match="exponent"):
+            encode(value)
+    else:
+        assert len(encode(value)) > 1000
+
+
+@pytest.mark.parametrize(
     ("value", "error"),
     [
         (1.5, TypeError),

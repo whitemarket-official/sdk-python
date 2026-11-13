@@ -23,12 +23,11 @@ from whitemarket._runtime.operation import OperationType
 from whitemarket._runtime.secret import Secret
 from whitemarket._runtime.transport_config import TransportConfig
 from whitemarket.errors.base import TransportError
-from whitemarket.retry import parse_retry_after
+from whitemarket.retry import RETRY_AFTER_STATUSES, parse_retry_after
 
 LOGGER_NAME = "whitemarket"
 _ERROR_BODY_BYTES = 1024 * 1024  # an error body is read up to what the redactor still handles
 _SUCCESS_LOWER, _SUCCESS_UPPER = 200, 299
-_RETRY_AFTER_STATUSES = (429, 503)
 
 
 class AsyncSleeper(Protocol):
@@ -99,6 +98,18 @@ class _NoReply:
     what: str
 
 
+@dataclass(frozen=True, slots=True)
+class AsyncTransportSeams:
+    """What the transport takes from the outside world: the clock, the wait and the jitter source.
+
+    Tests inject fixed ones; there is no public use for them.
+    """
+
+    clock: Callable[[], datetime] = _utc_now
+    sleeper: AsyncSleeper = async_sleep
+    random: Callable[[], float] = _JITTER
+
+
 class _SafeLog:
     """A logger that never lets its own failure change the outcome of a request."""
 
@@ -123,16 +134,15 @@ class AsyncGraphQLTransport:
         config: TransportConfig,
         *,
         logger: logging.Logger | None = None,
-        clock: Callable[[], datetime] = _utc_now,
-        sleeper: AsyncSleeper = async_sleep,
-        random: Callable[[], float] = _JITTER,
+        seams: AsyncTransportSeams | None = None,
     ) -> None:
         self._clients = clients
         self._config = config
         self._log = _SafeLog(logger or logging.getLogger(LOGGER_NAME))
-        self._clock = clock
-        self._sleeper = sleeper
-        self._random = random
+        seams = seams or AsyncTransportSeams()
+        self._clock = seams.clock
+        self._sleeper = seams.sleeper
+        self._random = seams.random
         if not clients.owned:
             self._log.info(
                 "WhiteMarket SDK: the injected HTTP client is used as is; the SDK timeouts "
@@ -179,7 +189,7 @@ class AsyncGraphQLTransport:
             await self._sleeper(delay)
 
     def _retry_after(self, reply: _Reply) -> int | None:
-        if reply.status not in _RETRY_AFTER_STATUSES:
+        if reply.status not in RETRY_AFTER_STATUSES:
             return None  # on every other status the header is ignored (SDK_SPEC 1.4)
         return parse_retry_after(reply.retry_after_header, self._clock())
 

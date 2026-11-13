@@ -3,19 +3,24 @@
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime
 from typing import Self, TypedDict, Unpack, cast
 
 import httpx
 
-from whitemarket._async.credentials import AsyncBearerCredentials, AsyncPartnerTokenCredentials
+from whitemarket._async.credentials import (
+    AsyncBearerCredentials,
+    AsyncPartnerTokenCredentials,
+    AsyncTokenRenewer,
+)
 from whitemarket._async.graphql import AsyncGraphQLExecutor
 from whitemarket._async.partner_token import AsyncPartnerTokenProvider
 from whitemarket._async.tokens import AsyncStaticAccessToken, AsyncTokenProvider, AsyncTokenStore
 from whitemarket._async.transport import AsyncGraphQLTransport, AsyncHttpClients
 from whitemarket._generated.client import AsyncGeneratedClient
+from whitemarket._runtime.credential_format import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.endpoints import Endpoints, require_user_agent_suffix
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.tokens import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.transport_config import TransportConfig, build_user_agent
 from whitemarket.config import DEFAULT_MAX_RESPONSE_BYTES, BuyReconciliation, Timeouts
 from whitemarket.retry import RetryPolicy
@@ -104,16 +109,16 @@ class AsyncWhiteMarketClient:
             raise ValueError(
                 "token_store keeps the token obtained with partner_token: pass it with that only"
             )
-        self.endpoints = Endpoints.resolve(
+        self._endpoints = Endpoints.resolve(
             base_url=base_url,
             graphql_path=graphql_path,
             export_base_url=export_base_url,
             sse_url=sse_url,
             ws_url=ws_url,
         )
-        self.buy_reconciliation = buy_reconciliation or BuyReconciliation()
+        self._buy_reconciliation = buy_reconciliation or BuyReconciliation()
         config = TransportConfig(
-            graphql_url=self.endpoints.graphql_url,
+            graphql_url=self._endpoints.graphql_url,
             user_agent=build_user_agent(require_user_agent_suffix(user_agent_suffix)),
             timeouts=timeouts or Timeouts(),
             max_response_bytes=max_response_bytes,
@@ -121,29 +126,17 @@ class AsyncWhiteMarketClient:
         )
         self._clients = AsyncHttpClients.create(config, http_client)
         self._transport = AsyncGraphQLTransport(self._clients, config, logger=logger)
-        provider = self._token_provider(partner_token, access_token, token_provider, token_store)
-        self._provider = provider
+        provider, renew = build_provider(
+            self._transport,
+            partner_token=partner_token,
+            access_token=access_token,
+            token_provider=token_provider,
+            token_store=token_store,
+        )
         self.generated = AsyncGeneratedClient(
-            AsyncGraphQLExecutor(self._transport, AsyncBearerCredentials(provider))
+            AsyncGraphQLExecutor(self._transport, AsyncBearerCredentials(provider, renew))
         )
         self.auth = AsyncAuthApi(provider, self.generated)
-
-    def _token_provider(
-        self,
-        partner_token: str | Secret | None,
-        access_token: str | Secret | None,
-        token_provider: AsyncTokenProvider | None,
-        token_store: AsyncTokenStore | None,
-    ) -> AsyncTokenProvider:
-        if partner_token is not None:
-            secret = _secret("partner_token", partner_token, is_valid_header_value)
-            executor = AsyncGraphQLExecutor(self._transport, AsyncPartnerTokenCredentials(secret))
-            return AsyncPartnerTokenProvider(executor, store=token_store)
-        if access_token is not None:
-            return AsyncStaticAccessToken(
-                _secret("access_token", access_token, is_valid_bearer_token)
-            )
-        return cast("AsyncTokenProvider", token_provider)  # exactly one credential was checked
 
     @classmethod
     def from_env(cls, **options: Unpack[AsyncClientOptions]) -> Self:
@@ -181,7 +174,35 @@ class AsyncWhiteMarketClient:
         await self.aclose()
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(base_url={self.endpoints.base_url!r})"
+        return f"{type(self).__name__}(base_url={self._endpoints.base_url!r})"
+
+
+def build_provider(
+    transport: AsyncGraphQLTransport,
+    *,
+    partner_token: str | Secret | None = None,
+    access_token: str | Secret | None = None,
+    token_provider: AsyncTokenProvider | None = None,
+    token_store: AsyncTokenStore | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> tuple[AsyncTokenProvider, AsyncTokenRenewer | None]:
+    """The token provider of the given credential, and how it renews a token a 401 rejected.
+
+    Exactly one credential is expected (the client checks). A Partner Token gets a provider that
+    exchanges it over `transport` and renews by its own rejected-token rule; the other credentials
+    renew through `provider.refresh()` (`renew` is `None`).
+    """
+    if partner_token is not None:
+        secret = _secret("partner_token", partner_token, is_valid_header_value)
+        executor = AsyncGraphQLExecutor(transport, AsyncPartnerTokenCredentials(secret))
+        exchanging = AsyncPartnerTokenProvider(executor, store=token_store, clock=clock)
+        return exchanging, exchanging.refresh_rejected
+    if access_token is not None:
+        static = AsyncStaticAccessToken(
+            _secret("access_token", access_token, is_valid_bearer_token)
+        )
+        return static, None
+    return cast("AsyncTokenProvider", token_provider), None  # exactly one credential was checked
 
 
 def _secret(name: str, value: str | Secret, valid: Callable[[str], bool]) -> Secret:

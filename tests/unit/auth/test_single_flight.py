@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
+import pytest
 
 from support.flavors import ASYNC, SYNC, jwt
 from support.http import reply
@@ -20,7 +21,8 @@ from support.rigs import (
     is_auth_request,
     token_answer,
 )
-from whitemarket import Secret
+from whitemarket import RetryPolicy, Secret
+from whitemarket.errors import ServerError
 
 CALLERS = 20
 STALE = jwt(exp=int(T0.timestamp()) + 3600, jti="stale")
@@ -29,8 +31,9 @@ STALE = jwt(exp=int(T0.timestamp()) + 3600, jti="stale")
 class Counting:
     """The server side: counts `auth_token` calls; rejects every token but the newest one."""
 
-    def __init__(self) -> None:
+    def __init__(self, auth_status: int = 200) -> None:
         self.make = fresh_token()
+        self.auth_status = auth_status
         self.auth_calls = 0
         self.newest = ""
         self._lock = threading.Lock()
@@ -39,6 +42,8 @@ class Counting:
         if is_auth_request(request):
             with self._lock:
                 self.auth_calls += 1
+                if self.auth_status != 200:
+                    return reply(self.auth_status).build()
                 self.newest = self.make()
                 return token_answer(self.newest).build()
         if self.newest and request.headers["authorization"] == f"Bearer {self.newest}":
@@ -46,16 +51,17 @@ class Counting:
         return reply(401, b'{"error":{"code":401}}').build()
 
 
-def async_stack(server: Counting) -> Stack:
-    return Stack(ASYNC, server, http=httpx.AsyncClient(transport=SlowAsyncTransport(server, 0.02)))
+def async_stack(server: Counting, **options: Any) -> Stack:
+    http = httpx.AsyncClient(transport=SlowAsyncTransport(server, 0.02))
+    return Stack(ASYNC, server, http=http, **options)
 
 
-def sync_stack(server: Counting) -> Stack:
+def sync_stack(server: Counting, **options: Any) -> Stack:
     def slow(request: httpx.Request) -> httpx.Response:
         time.sleep(0.02)
         return server(request)
 
-    return Stack(SYNC, slow)
+    return Stack(SYNC, slow, **options)
 
 
 def in_threads(call: Callable[[], Any]) -> list[Any]:
@@ -138,25 +144,63 @@ def test_a_refresh_after_a_finished_one_exchanges_again() -> None:
     assert server.auth_calls == 2, "coalescing is for overlapping callers only"
 
 
-async def test_a_failed_exchange_does_not_poison_the_waiters() -> None:
-    calls = 0
+NO_RETRY = RetryPolicy.none()
+FAILING = [
+    pytest.param(lambda stack: stack.partner.access_token(), False, id="access_token"),
+    pytest.param(lambda stack: stack.partner.refresh(), False, id="refresh"),
+    pytest.param(
+        lambda stack: stack.executor.execute("query Q { a }", "Q", {}, "query"),
+        True,  # a cached, stale token: only a 401 makes the callers refresh
+        id="rejected request",
+    ),
+]
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return reply(503).build()
-        return token_answer(fresh_token()()).build()
 
-    stack = Stack(
-        ASYNC, handler, http=httpx.AsyncClient(transport=SlowAsyncTransport(handler, 0.02))
-    )
+@pytest.mark.parametrize(("call", "cached"), FAILING)
+async def test_async_waiters_behind_a_failed_exchange_share_its_failure(
+    call: Any, cached: bool
+) -> None:
+    server = Counting(auth_status=500)
+    stack = async_stack(server, retry=NO_RETRY)
+    if cached:
+        await stack.store.set(Secret(STALE), T0.replace(year=2027))
 
-    outcomes = await asyncio.gather(
-        *(stack.partner.access_token() for _ in range(3)), return_exceptions=True
-    )
+    outcomes = await asyncio.gather(*(call(stack) for _ in range(CALLERS)), return_exceptions=True)
     await stack.http.aclose()
 
-    assert isinstance(outcomes[0], Exception)
-    assert all(isinstance(o, Secret) for o in outcomes[1:]), "the next caller exchanges by itself"
-    assert calls == 2
+    assert server.auth_calls == 1, "one failed exchange, not one per waiter"
+    assert [type(o) for o in outcomes] == [ServerError] * CALLERS
+
+
+@pytest.mark.parametrize(("call", "cached"), FAILING)
+def test_threads_behind_a_failed_exchange_share_its_failure(call: Any, cached: bool) -> None:
+    server = Counting(auth_status=500)
+    stack = sync_stack(server, retry=NO_RETRY)
+    if cached:
+        stack.store.set(Secret(STALE), T0.replace(year=2027))
+
+    def attempt() -> Any:
+        try:
+            return call(stack)
+        except Exception as error:
+            return error
+
+    outcomes = in_threads(attempt)
+    stack.close()
+
+    assert server.auth_calls == 1
+    assert [type(o) for o in outcomes] == [ServerError] * CALLERS
+
+
+async def test_a_caller_after_a_failed_exchange_exchanges_by_itself() -> None:
+    server = Counting(auth_status=500)
+    stack = async_stack(server, retry=NO_RETRY)
+
+    with pytest.raises(ServerError):
+        await stack.partner.access_token()
+    server.auth_status = 200
+    token = await stack.partner.access_token()
+    await stack.http.aclose()
+
+    assert server.auth_calls == 2
+    assert isinstance(token, Secret)

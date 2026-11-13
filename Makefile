@@ -65,6 +65,10 @@ types: ## Static types: mypy --strict and pyright strict on src/
 test: ## Unit tests; a subset: make test K=expr (pytest -k)
 	@$(QC) test $(BIN)/pytest tests/unit $(if $(K),-k '$(K)')
 
+.PHONY: test-memory
+test-memory: ## Slow memory-bound streaming tests (tests/memory, about two minutes)
+	@$(QC) test-memory $(BIN)/pytest tests/memory -m memory
+
 .PHONY: coverage
 coverage: ## Unit tests with the coverage gate (fail_under in pyproject.toml, generated code excluded)
 	@$(QC) coverage $(BIN)/pytest tests/unit --cov --cov-report=term-missing \
@@ -108,7 +112,7 @@ $(CODEGEN_STAMP): pyproject.toml
 .PHONY: codegen
 codegen: $(CODEGEN_STAMP) ## Regenerate operations, fragments, src/whitemarket/_generated and _sync from the committed schema
 	@$(CODEGEN_NODE) generate-operations.mjs
-	@RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh .
+	@PY=$(PY) RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh .
 
 # Regenerates everything into var/codegen-check and fails on any difference with the committed files.
 .PHONY: codegen-check
@@ -116,7 +120,7 @@ codegen-check: $(CODEGEN_STAMP) ## Regenerate into var/codegen-check and fail on
 	@rm -rf var/codegen-check && mkdir -p var/codegen-check
 	@$(QC) codegen-check bash -c 'set -e; \
 		($(CODEGEN_NODE) generate-operations.mjs --out-dir ../../var/codegen-check); \
-		RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh var/codegen-check; \
+		PY=$(PY) RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh var/codegen-check; \
 		rc=0; \
 		diff -r graphql/operations var/codegen-check/graphql/operations || rc=1; \
 		diff -r graphql/fragments var/codegen-check/graphql/fragments || rc=1; \

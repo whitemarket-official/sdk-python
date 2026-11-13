@@ -3,12 +3,14 @@
 # Usage: tools/codegen/generate.sh <out-root>   ("." = the repository, anything else = a scratch tree inside it)
 # Run from the repository root. The operation documents and fragments are read from <out-root>/graphql and must
 # already be generated there (generate-operations.mjs). Writes <out-root>/src/whitemarket/{_generated,_sync}.
-# Environment: CODEGEN_VENV (default .venv-codegen), RUFF (default .venv/bin/ruff).
+# Environment: CODEGEN_VENV (default .venv-codegen), RUFF (default .venv/bin/ruff), PY (default .venv/bin/python:
+# the project venv runs unasync, not whatever python3 is on the PATH).
 set -euo pipefail
 
 root="${1:?usage: generate.sh <out-root>}"
 venv="${CODEGEN_VENV:-.venv-codegen}"
 ruff="${RUFF:-.venv/bin/ruff}"
+py="${PY:-.venv/bin/python}"
 pkg="$root/src/whitemarket"
 stage="$root/var/codegen"
 
@@ -28,7 +30,7 @@ PYTHONPATH=tools/codegen "$venv/bin/ariadne-codegen" --config "$stage/ariadne.to
     || { cat "$stage/ariadne.log" >&2; exit 1; }
 
 # 3. unasync: the generated async client and base client, then the hand-written async code.
-python3 tools/unasync.py \
+"$py" tools/unasync.py \
     --file "$pkg/_generated/client.py" "$pkg/_generated/sync_client.py" \
     --file "$pkg/_generated/async_base_client.py" "$pkg/_generated/base_client.py" \
     --tree src/whitemarket/_async "$pkg/_sync"

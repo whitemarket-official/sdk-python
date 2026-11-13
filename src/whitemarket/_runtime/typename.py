@@ -10,8 +10,10 @@ UNKNOWN_TYPENAME_TAG: Final = "__unknown__"
 def typename_discriminator(*known: str) -> Discriminator:
     """A pydantic callable discriminator over tagged union members.
 
-    A `__typename` in `known` selects the member tagged with it; anything else (a new server type,
-    a missing or non-string `__typename`) selects the member tagged `__unknown__`.
+    A `__typename` in `known` selects the member tagged with it; anything else selects the member
+    tagged `__unknown__`: a new server type decodes there. A missing or non-string `__typename` is
+    routed there too, and the fallback member rejects it (a `DecodeError`): every selection of the
+    SDK includes `__typename`, so its absence is a malformed answer, not an unknown type.
     """
     known_set = frozenset(known)
 

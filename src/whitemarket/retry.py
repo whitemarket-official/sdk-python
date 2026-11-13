@@ -9,7 +9,7 @@ from whitemarket._runtime.operation import OperationType
 
 _RETRYABLE_STATUSES: Final = frozenset({429, 500, 502, 503, 504})
 # The statuses whose error carries `retry_after` (SDK_SPEC 1.5): a header there stops the retries.
-_RETRY_AFTER_STATUSES: Final = frozenset({429, 503})
+RETRY_AFTER_STATUSES: Final = frozenset({429, 503})
 # A delay-seconds value too long to matter; the caller decides what to do with it.
 _SATURATED_SECONDS: Final = 999_999_999
 _DIGITS: Final = re.compile(r"[0-9]+", re.ASCII)
@@ -27,6 +27,7 @@ class RetryPolicy:
     A 429 or 503 that carries `Retry-After` is not retried: the caller gets the error with
     `retry_after` at once and decides when to try again, so the SDK never blocks for a time the
     server chose (owner decision 2026-10-31). On every other status the header is ignored.
+    An unparsable value counts as no header (the query is retried), as in the PHP SDK.
     """
 
     max_attempts: int = 3
@@ -60,7 +61,7 @@ class RetryPolicy:
             return False
         if status is None:
             return True
-        if retry_after is not None and status in _RETRY_AFTER_STATUSES:
+        if retry_after is not None and status in RETRY_AFTER_STATUSES:
             return False
         return status in _RETRYABLE_STATUSES
 

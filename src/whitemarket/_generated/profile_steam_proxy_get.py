@@ -5,8 +5,10 @@ from typing import Optional
 
 from pydantic import Field
 
+from whitemarket._runtime.secret import Secret
+
 from .base_model import BaseModel
 
 
 class ProfileSteamProxyGet(BaseModel):
-    profile_steam_proxy_get: Optional[str] = Field(alias="profile_steam_proxy_get")
+    profile_steam_proxy_get: Optional[Secret] = Field(alias="profile_steam_proxy_get")

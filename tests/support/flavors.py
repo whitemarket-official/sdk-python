@@ -41,6 +41,10 @@ class Flavor:
         mod = importlib.import_module(f"whitemarket.{self.package}.{module}")
         return getattr(mod, f"Async{name}" if self.is_async else name)
 
+    def attr(self, module: str, name: str) -> Any:
+        """`name` of `whitemarket.<package>.<module>` as it is spelled in both flavors."""
+        return getattr(importlib.import_module(f"whitemarket.{self.package}.{module}"), name)
+
     @property
     def http_client_class(self) -> Any:
         return httpx.AsyncClient if self.is_async else httpx.Client

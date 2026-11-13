@@ -4,16 +4,21 @@
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime
 from typing import Self, TypedDict, Unpack, cast
 
 import httpx
 
 from whitemarket._generated.sync_client import GeneratedClient
+from whitemarket._runtime.credential_format import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.endpoints import Endpoints, require_user_agent_suffix
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.tokens import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.transport_config import TransportConfig, build_user_agent
-from whitemarket._sync.credentials import BearerCredentials, PartnerTokenCredentials
+from whitemarket._sync.credentials import (
+    BearerCredentials,
+    PartnerTokenCredentials,
+    TokenRenewer,
+)
 from whitemarket._sync.graphql import GraphQLExecutor
 from whitemarket._sync.partner_token import PartnerTokenProvider
 from whitemarket._sync.tokens import StaticAccessToken, TokenProvider, TokenStore
@@ -105,16 +110,16 @@ class WhiteMarketClient:
             raise ValueError(
                 "token_store keeps the token obtained with partner_token: pass it with that only"
             )
-        self.endpoints = Endpoints.resolve(
+        self._endpoints = Endpoints.resolve(
             base_url=base_url,
             graphql_path=graphql_path,
             export_base_url=export_base_url,
             sse_url=sse_url,
             ws_url=ws_url,
         )
-        self.buy_reconciliation = buy_reconciliation or BuyReconciliation()
+        self._buy_reconciliation = buy_reconciliation or BuyReconciliation()
         config = TransportConfig(
-            graphql_url=self.endpoints.graphql_url,
+            graphql_url=self._endpoints.graphql_url,
             user_agent=build_user_agent(require_user_agent_suffix(user_agent_suffix)),
             timeouts=timeouts or Timeouts(),
             max_response_bytes=max_response_bytes,
@@ -122,27 +127,17 @@ class WhiteMarketClient:
         )
         self._clients = HttpClients.create(config, http_client)
         self._transport = GraphQLTransport(self._clients, config, logger=logger)
-        provider = self._token_provider(partner_token, access_token, token_provider, token_store)
-        self._provider = provider
+        provider, renew = build_provider(
+            self._transport,
+            partner_token=partner_token,
+            access_token=access_token,
+            token_provider=token_provider,
+            token_store=token_store,
+        )
         self.generated = GeneratedClient(
-            GraphQLExecutor(self._transport, BearerCredentials(provider))
+            GraphQLExecutor(self._transport, BearerCredentials(provider, renew))
         )
         self.auth = AuthApi(provider, self.generated)
-
-    def _token_provider(
-        self,
-        partner_token: str | Secret | None,
-        access_token: str | Secret | None,
-        token_provider: TokenProvider | None,
-        token_store: TokenStore | None,
-    ) -> TokenProvider:
-        if partner_token is not None:
-            secret = _secret("partner_token", partner_token, is_valid_header_value)
-            executor = GraphQLExecutor(self._transport, PartnerTokenCredentials(secret))
-            return PartnerTokenProvider(executor, store=token_store)
-        if access_token is not None:
-            return StaticAccessToken(_secret("access_token", access_token, is_valid_bearer_token))
-        return cast("TokenProvider", token_provider)  # exactly one credential was checked
 
     @classmethod
     def from_env(cls, **options: Unpack[ClientOptions]) -> Self:
@@ -180,7 +175,33 @@ class WhiteMarketClient:
         self.close()
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(base_url={self.endpoints.base_url!r})"
+        return f"{type(self).__name__}(base_url={self._endpoints.base_url!r})"
+
+
+def build_provider(
+    transport: GraphQLTransport,
+    *,
+    partner_token: str | Secret | None = None,
+    access_token: str | Secret | None = None,
+    token_provider: TokenProvider | None = None,
+    token_store: TokenStore | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> tuple[TokenProvider, TokenRenewer | None]:
+    """The token provider of the given credential, and how it renews a token a 401 rejected.
+
+    Exactly one credential is expected (the client checks). A Partner Token gets a provider that
+    exchanges it over `transport` and renews by its own rejected-token rule; the other credentials
+    renew through `provider.refresh()` (`renew` is `None`).
+    """
+    if partner_token is not None:
+        secret = _secret("partner_token", partner_token, is_valid_header_value)
+        executor = GraphQLExecutor(transport, PartnerTokenCredentials(secret))
+        exchanging = PartnerTokenProvider(executor, store=token_store, clock=clock)
+        return exchanging, exchanging.refresh_rejected
+    if access_token is not None:
+        static = StaticAccessToken(_secret("access_token", access_token, is_valid_bearer_token))
+        return static, None
+    return cast("TokenProvider", token_provider), None  # exactly one credential was checked
 
 
 def _secret(name: str, value: str | Secret, valid: Callable[[str], bool]) -> Secret:

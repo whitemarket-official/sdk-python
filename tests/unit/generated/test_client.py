@@ -9,19 +9,20 @@ from decimal import Decimal
 import pytest
 
 from support.executors import Harness
+from support.flavors import FLAVORS, Flavor
 from support.payloads import market_list_payload
 from whitemarket._generated.client import AsyncGeneratedClient
 from whitemarket._generated.input_types import ForwardPaginationInput, MarketProductSearchInput
 from whitemarket._generated.sync_client import GeneratedClient
 from whitemarket._runtime.json_codec import encode
 
-KINDS = pytest.mark.parametrize("kind", ["async", "sync"])
+KINDS = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 FADE = Decimal("95.130000000000000001")  # not representable as a binary float
 
 
 @KINDS
-def test_connection_query_runs_as_a_query_with_exact_variables(kind: str) -> None:
-    harness = Harness(kind, market_list_payload([]))
+def test_connection_query_runs_as_a_query_with_exact_variables(flavor: Flavor) -> None:
+    harness = Harness(flavor, market_list_payload([]))
 
     result = harness.call(
         "market_list",
@@ -43,8 +44,8 @@ def test_connection_query_runs_as_a_query_with_exact_variables(kind: str) -> Non
 
 
 @KINDS
-def test_an_argument_that_was_not_passed_is_left_out_of_the_variables(kind: str) -> None:
-    harness = Harness(kind, market_list_payload([]))
+def test_an_argument_that_was_not_passed_is_left_out_of_the_variables(flavor: Flavor) -> None:
+    harness = Harness(flavor, market_list_payload([]))
 
     harness.call("market_list")
     harness.call("market_list", search=None)
@@ -53,8 +54,8 @@ def test_an_argument_that_was_not_passed_is_left_out_of_the_variables(kind: str)
 
 
 @KINDS
-def test_mutation_runs_as_a_mutation(kind: str) -> None:
-    harness = Harness(kind, {"market_lifetime_all": True})
+def test_mutation_runs_as_a_mutation(flavor: Flavor) -> None:
+    harness = Harness(flavor, {"market_lifetime_all": True})
 
     result = harness.call("market_lifetime_all", value=600)
 
@@ -65,9 +66,9 @@ def test_mutation_runs_as_a_mutation(kind: str) -> None:
 
 
 @KINDS
-def test_a_raw_document_without_a_declared_type_takes_it_from_the_document(kind: str) -> None:
+def test_a_raw_document_without_a_declared_type_takes_it_from_the_document(flavor: Flavor) -> None:
     # Only a document that is clearly a query is retried (CLAUDE.md rule 2; PHP RawDocument).
-    harness = Harness(kind, {"test_ping": "pong"})
+    harness = Harness(flavor, {"test_ping": "pong"})
 
     data = harness.call("execute", "query Ping { test_ping }", {"n": Decimal("1.50")}, "Ping")
     harness.call("execute", "mutation M { market_lifetime_all(value: 600) }")
@@ -81,8 +82,8 @@ def test_a_raw_document_without_a_declared_type_takes_it_from_the_document(kind:
 
 
 @KINDS
-def test_a_raw_document_can_declare_itself_a_query(kind: str) -> None:
-    harness = Harness(kind, {"test_ping": "pong"})
+def test_a_raw_document_can_declare_itself_a_query(flavor: Flavor) -> None:
+    harness = Harness(flavor, {"test_ping": "pong"})
 
     harness.call("execute", "query Ping { test_ping }", operation_type="query")
 
@@ -97,8 +98,8 @@ def test_a_raw_document_can_declare_itself_a_query(kind: str) -> None:
     [1.5, float("nan"), Decimal("NaN"), Decimal("Infinity"), {"nested": [1.5]}],
     ids=["float", "nan", "decimal-nan", "decimal-inf", "nested-float"],
 )
-def test_a_raw_document_refuses_a_float_or_a_non_finite_number(kind: str, bad: object) -> None:
-    harness = Harness(kind, {})
+def test_a_raw_document_refuses_a_float_or_a_non_finite_number(flavor: Flavor, bad: object) -> None:
+    harness = Harness(flavor, {})
 
     with pytest.raises((TypeError, ValueError)):
         harness.call("execute", "mutation M { x }", {"v": bad})

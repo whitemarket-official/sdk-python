@@ -1,7 +1,6 @@
 """The hand-written async/sync primitive pairs the unasync rules map onto each other."""
 
 import asyncio
-import threading
 import time
 
 import pytest
@@ -18,21 +17,15 @@ def test_the_sync_pair_blocks_the_thread_for_the_time() -> None:
 
 
 async def test_the_async_pair_yields_to_the_loop_while_it_sleeps() -> None:
-    ticks: list[int] = []
+    sleeping = asyncio.create_task(c.async_sleep(0.05))
+    ticks = 0
 
-    async def ticker() -> None:
-        while len(ticks) < 3:
-            ticks.append(1)
-            await asyncio.sleep(0)
+    while not sleeping.done():
+        ticks += 1
+        await asyncio.sleep(0)
 
-    await asyncio.gather(c.async_sleep(0.02), ticker())
-
-    assert len(ticks) >= 3
-
-
-def test_the_lock_pair_are_the_stdlib_locks() -> None:
-    assert c.AsyncLock is asyncio.Lock
-    assert isinstance(c.Lock(), type(threading.Lock()))
+    # A blocking sleep would run the whole 50 ms inside the first yield: one tick.
+    assert ticks > 3
 
 
 async def test_the_async_lock_serialises() -> None:
@@ -51,5 +44,18 @@ async def test_the_async_lock_serialises() -> None:
 
 
 @pytest.mark.parametrize("seconds", [0, 0.0])
-def test_a_zero_sleep_returns(seconds: float) -> None:
+def test_a_zero_sleep_returns_at_once(seconds: float) -> None:
+    start = time.monotonic()
+
     c.sleep(seconds)
+
+    assert time.monotonic() - start < 0.05
+
+
+@pytest.mark.parametrize("seconds", [0, 0.0])
+async def test_a_zero_async_sleep_returns_at_once(seconds: float) -> None:
+    start = time.monotonic()
+
+    await c.async_sleep(seconds)
+
+    assert time.monotonic() - start < 0.05

@@ -1,10 +1,10 @@
 """Fake executors: the seam between the generated client and the transport (no network)."""
 
-import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from support.flavors import Flavor
 from whitemarket._generated.client import AsyncGeneratedClient
 from whitemarket._generated.sync_client import GeneratedClient
 
@@ -56,9 +56,9 @@ class FakeAsyncExecutor:
 class Harness:
     """One generated client (async or sync) on a fake executor; `call` hides the difference."""
 
-    def __init__(self, kind: str, data: dict[str, Any]) -> None:
-        self.kind = kind
-        if kind == "async":
+    def __init__(self, flavor: Flavor, data: dict[str, Any]) -> None:
+        self.flavor = flavor
+        if flavor.is_async:
             self.executor: FakeAsyncExecutor | FakeExecutor = FakeAsyncExecutor(data)
             self.client: Any = AsyncGeneratedClient(self.executor)
         else:
@@ -66,8 +66,7 @@ class Harness:
             self.client = GeneratedClient(self.executor)
 
     def call(self, method: str, /, *args: object, **kwargs: object) -> Any:
-        result = getattr(self.client, method)(*args, **kwargs)
-        return asyncio.run(result) if self.kind == "async" else result
+        return self.flavor.run(getattr(self.client, method)(*args, **kwargs))
 
     @property
     def calls(self) -> list[Call]:

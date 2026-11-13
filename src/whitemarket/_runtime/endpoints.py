@@ -96,8 +96,10 @@ class Endpoints:
                 export_base_url if export_base_url is not None else DEFAULT_EXPORT_BASE_URL,
             ),
             # Derived from the (validated) base URL; a given one must be TLS-only.
-            sse_url=_require_url("sse_url", sse_url, ("https",)) if sse_url else base + _SSE_PATH,
+            sse_url=_require_url("sse_url", sse_url, ("https",))
+            if sse_url is not None
+            else base + _SSE_PATH,
             ws_url=_require_url("ws_url", ws_url, ("wss",))
-            if ws_url
+            if ws_url is not None
             else f"wss://{host}{_WS_PATH}",
         )

@@ -55,7 +55,13 @@ class GraphQLErrorEntry:
 
 
 class GraphQLError(WhiteMarketError):
-    """A 200 answer with `errors`; `partial_data` is the `data` that came with them, if any."""
+    """A 200 answer with `errors`; `partial_data` is the `data` that came with them, if any.
+
+    The exception text, every entry's `message` and `extensions`, and `partial_data` are raw
+    server data: not redacted (an accepted limitation, docs/DEVIATIONS.md, as in the PHP SDK), so
+    do not log them blindly. The one exception: the root fields that carry a credential
+    (`auth_token`, `auth_steam_jwt`, `profile_steam_proxy_get`) never reach `partial_data`.
+    """
 
     def __init__(
         self,

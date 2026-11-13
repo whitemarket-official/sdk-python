@@ -17,6 +17,9 @@ dependencies = [
   # 2.8: alias_generator with populate_by_name in the generated models, callable discriminators,
   # Field(deprecated=...) (ADR 0001); the lowest-dependency CI job checks the floor.
   "pydantic>=2.8",
+  # `Secret` builds its pydantic schema with `pydantic_core.core_schema`, the documented way to write a custom
+  # type (ADR 0001). Pydantic pins its own exact core version, so this carries no version bound of its own.
+  "pydantic-core",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -48,7 +51,9 @@ test = [
 ]
 # GraphQL codegen tool, isolated in its own venv (`make install-codegen`): ariadne-codegen 0.19.0 requires
 # ruff>=0.15,<0.16, which conflicts with the ruff pin of `dev`.
-codegen = ["ariadne-codegen==0.19.0"]
+# tools/codegen/ariadne_plugin.py imports graphql-core directly, so it is declared here and not left to ariadne's own
+# requirement (CLAUDE.md rule 10); the same pin as the test extra.
+codegen = ["ariadne-codegen==0.19.0", "graphql-core==3.2.14"]
 dev = [
   "whitemarket-sdk[test]",
   "build==1.6.1",
@@ -102,13 +107,14 @@ select = [
   "E", "W", "F", "I", "N", "UP", "B", "S", "SIM", "RUF", "ASYNC", "PT", "C4", "DTZ", "T20", "PL",
 ]
 
-[tool.ruff.lint.pylint]
-# The client takes every SDK_SPEC 2 option as a keyword.
-max-args = 20
-
 [tool.ruff.lint.per-file-ignores]
 # S101: assert is the pytest idiom. PLR2004: literal expected values are the point of a test.
-"tests/**" = ["S101", "PLR2004"]
+# PLR0913: the test rigs take one keyword per scenario knob (retry, clock, store, ...), see #0
+"tests/**" = ["S101", "PLR2004", "PLR0913"]
+# PLR0913: the client constructor takes every SDK_SPEC 2 option as a keyword, see #0
+"src/whitemarket/_async/client.py" = ["PLR0913"]
+# PLR0913: the generated twin of the async client constructor above, see #0
+"src/whitemarket/_sync/client.py" = ["PLR0913"]
 
 # --- types -------------------------------------------------------------------
 
@@ -131,6 +137,7 @@ testpaths = ["tests"]
 pythonpath = ["tools", "tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 filterwarnings = ["error"]
+markers = ["memory: slow memory-bound streaming tests (tests/memory, make test-memory)"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

@@ -8,6 +8,7 @@ from whitemarket.errors.http import (
     ServerError,
     ServiceUnavailableError,
 )
+from whitemarket.retry import RETRY_AFTER_STATUSES
 
 _BAD_REQUEST = 400
 _UNAUTHORIZED = 401
@@ -21,6 +22,8 @@ def http_error_for(status: int, body: bytes, retry_after: float | None = None) -
 
     A 3xx (redirects are never followed) and any other status is a plain `HttpError`.
     """
+    if status not in RETRY_AFTER_STATUSES:
+        retry_after = None
     if status == _BAD_REQUEST:
         return BadRequestError(body)
     if status == _UNAUTHORIZED:
