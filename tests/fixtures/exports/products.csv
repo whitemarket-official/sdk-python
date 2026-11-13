@@ -1,0 +1,5 @@
+product_id,product_category,product_type,product_subtype,product_class_id,product_instance_id,product_asset_id,product_float,product_paint_index,product_phase,name_hash,price,currency,product_paint_seed,deliveryType,deliveryPromise,inspectLink
+00000000-0000-4000-8000-000000000001,RIFLES,Rifle,AK-47,310776560,188530139,9007199254740993,0.2517,282,,"AK-47 | Synthetic Redline (Field-Tested)",7.060,USD,661,auto,10min,steam://synthetic-1
+00000000-0000-4000-8000-000000000002,STICKERS,Sticker,,18446744073709551615,0,18446744073709551614,,,,"Sticker | Synthetic Crown (Foil)",1200.5,USD,,manual,24hours,""
+00000000-0000-4000-8000-000000000003,,,,1,2,3,,,,Synthetic Uncategorized,0.03,USD,,semi,1hour,
+00000000-0000-4000-8000-000000000004,KNIVES,Knife,Synthetic Knife,30000000000000001,4,30000000000000002,0.0123,415,Phase 2,"★ Synthetic Knife | Doppler (Factory New)",950.000,USD,12,SEMI,12hours,steam://synthetic-415

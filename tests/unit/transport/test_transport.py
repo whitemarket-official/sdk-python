@@ -62,9 +62,9 @@ class Rig:
             clients,
             config,
             logger=logger,
-            clock=lambda: NOW,
-            sleeper=flavor.sleeper(self.sleeps),
-            random=lambda: jitter,
+            seams=flavor.cls("transport", "TransportSeams")(
+                clock=lambda: NOW, sleeper=flavor.sleeper(self.sleeps), random=lambda: jitter
+            ),
         )
 
     def post(self, kind: str = "query", headers: Any = AUTH, body: bytes = b'{"query":"q"}') -> Any:

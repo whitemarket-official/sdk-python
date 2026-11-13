@@ -9,9 +9,10 @@ import pytest
 from support.flavors import FLAVORS, Flavor
 from support.http import Script, data, json_response, reply
 from support.rigs import Stack, body_of
-from whitemarket.errors import DecodeError, GraphQLError, NotFoundError
+from whitemarket.errors import DecodeError, GraphQLError, NotFoundError, ServiceUnavailableError
 
 ACCESS = "static.access.token"
+LEAK = "leaked.jwt.value"
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -182,3 +183,53 @@ def test_a_decode_error_never_holds_the_response(make: Any) -> None:
         run(stack)
 
     assert "SECRET-RESPONSE-VALUE" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param("mutation M { a }", id="mutation keyword"),
+        pytest.param("query Q { a } mutation M { b }", id="a mutation next to a query"),
+    ],
+)
+def test_the_executor_never_retries_a_mutation_document_declared_a_query(
+    make: Any, document: str
+) -> None:
+    stack, script = make(reply(503), data(a=1))
+
+    with pytest.raises(ServiceUnavailableError):
+        run(stack, document)  # `run` declares "query"
+
+    assert script.count == 1
+
+
+@pytest.mark.parametrize(
+    ("partial", "kept"),
+    [
+        pytest.param({"auth_token": {"accessToken": LEAK}}, None, id="auth_token only"),
+        pytest.param({"auth_steam_jwt": {"accessToken": LEAK}}, None, id="auth_steam_jwt only"),
+        pytest.param(
+            {"auth_token": {"accessToken": LEAK}, "test_ping": "pong"},
+            {"test_ping": "pong"},
+            id="other fields of the answer stay",
+        ),
+        pytest.param({"test_ping": "pong"}, {"test_ping": "pong"}, id="no credential field"),
+    ],
+)
+def test_the_credential_of_an_exchange_never_lands_in_partial_data(
+    make: Any, partial: dict[str, Any], kept: dict[str, Any] | None
+) -> None:
+    stack, _ = make(json_response({"data": partial, "errors": [{"message": "partly failed"}]}))
+
+    with pytest.raises(GraphQLError) as caught:
+        run(stack, "mutation AuthToken { auth_token { accessToken } }", "AuthToken")
+
+    assert caught.value.partial_data == kept
+    assert LEAK not in repr(caught.value.partial_data) + str(caught.value)
+
+
+def test_an_integer_too_long_for_python_is_a_decode_error(make: Any) -> None:
+    stack, _ = make(reply(200, b'{"data": {"a": ' + b"9" * 5000 + b"}}"))
+
+    with pytest.raises(DecodeError):
+        run(stack)
