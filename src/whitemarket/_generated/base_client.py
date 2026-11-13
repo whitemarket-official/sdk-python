@@ -3,8 +3,8 @@
 
 """Base class of the generated client: the SDK's own executor-backed GraphQL base.
 
-ariadne-codegen copies this file into `_generated/base_client.py`; it must hold the text
-`class BaseClient`. The base itself lives in `src/whitemarket/_sync/graphql_base.py`.
+ariadne-codegen copies this file into `_generated/async_base_client.py`; it must hold the text
+`class AsyncBaseClient`. The base itself lives in `src/whitemarket/_async/graphql_base.py`.
 """
 
 from whitemarket._sync.graphql_base import GraphQLBase

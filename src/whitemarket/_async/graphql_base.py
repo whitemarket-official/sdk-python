@@ -9,6 +9,7 @@ from whitemarket._async.executor import AsyncOperationExecutor
 from whitemarket._runtime.decode import decode_error_from
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket._runtime.operation import OperationType
+from whitemarket._runtime.raw_document import infer_operation_type
 
 _Model = TypeVar("_Model", bound=BaseModel)
 
@@ -29,12 +30,13 @@ class AsyncGraphQLBase:
     ) -> dict[str, Any]:
         """Run a document and return the `data` object.
 
-        The generated methods pass `operation_type`. A raw call that declares none runs as a
-        mutation, so it is never retried (CLAUDE.md rule 2); declare a query to allow retries.
+        The generated methods pass `operation_type`. A raw call that declares none gets it from
+        the document: only a document that is clearly a query is retried, anything else runs as a
+        mutation and is never retried (CLAUDE.md rule 2).
         """
         plain = cast("dict[str, object]", to_plain(variables or {}))  # a mapping stays a dict
         return await self._executor.execute(
-            document, operation_name, plain, operation_type or "mutation"
+            document, operation_name, plain, operation_type or infer_operation_type(document)
         )
 
     def get_data(self, response: dict[str, Any]) -> dict[str, Any]:

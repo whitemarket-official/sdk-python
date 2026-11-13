@@ -34,6 +34,24 @@ unasync = pytest.importorskip("unasync", reason="tools/ is not part of this chec
             "from whitemarket._async.x import Y", "from whitemarket._sync.x import Y", id="_async"
         ),
         pytest.param("import whitemarket._async", "import whitemarket._sync", id="_async bare"),
+        pytest.param("data = await resp.aread()", "data = resp.read()", id="aread"),
+        pytest.param(
+            "async for c in r.aiter_bytes():", "for c in r.iter_bytes():", id="aiter_bytes"
+        ),
+        pytest.param("r.aiter_raw()", "r.iter_raw()", id="aiter_raw"),
+        pytest.param("r.aiter_text()", "r.iter_text()", id="aiter_text"),
+        pytest.param("r.aiter_lines()", "r.iter_lines()", id="aiter_lines"),
+        pytest.param("x = await anext(it)", "x = next(it)", id="anext"),
+        pytest.param("it = aiter(x)", "it = iter(x)", id="aiter"),
+        pytest.param("class _AsyncHelper: ...", "class _Helper: ...", id="_AsyncX private"),
+        pytest.param("_async_retry()", "_retry()", id="_async_x private"),
+        pytest.param(
+            "from whitemarket._generated.client import AsyncGeneratedClient",
+            "from whitemarket._generated.sync_client import GeneratedClient",
+            id="generated client module",
+        ),
+        pytest.param('__all__ = ["AsyncThing"]', '__all__ = ["Thing"]', id="name string"),
+        pytest.param('x: "AsyncFoo[int]"', 'x: "Foo[int]"', id="forward reference"),
     ],
 )
 def test_each_rule_of_the_table(source: str, expected: str) -> None:
@@ -51,10 +69,21 @@ def test_each_rule_of_the_table(source: str, expected: str) -> None:
         "def aclosed(): ...",
         "_asynchronous = 1",
         "x = 'async_'",
+        "# must not await here\n",
+        'msg = "must not await here"',
+        'doc = """Talks about AsyncThing and aread."""',
+        "client = 1",
+        "x.client",
     ],
 )
 def test_names_that_merely_look_similar_are_left_alone(unchanged: str) -> None:
     assert unasync.rewrite(unchanged) == unchanged
+
+
+def test_comments_and_prose_keep_their_words_while_code_is_rewritten() -> None:
+    source = "x = await f()  # we await it\n"
+
+    assert unasync.rewrite(source) == "x = f()  # we await it\n"
 
 
 def test_the_rule_table_has_one_rule_per_construct_and_unique_names() -> None:
@@ -72,8 +101,9 @@ def test_the_rule_table_has_one_rule_per_construct_and_unique_names() -> None:
         "import asyncio\n",
         "x = asyncio.sleep(1)\n",
         "async_ = 1\n",
+        "x = y.aiter_foo\n",
     ],
-    ids=["import asyncio", "asyncio.sleep", "async_ alone"],
+    ids=["import asyncio", "asyncio.sleep", "async_ alone", "aiter_ prefix"],
 )
 def test_something_with_no_rule_fails_instead_of_emitting_async_code(source: str) -> None:
     with pytest.raises(unasync.UnasyncError, match="no rule for"):

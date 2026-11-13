@@ -5,11 +5,12 @@ Usage (from the repository root; `make codegen` runs it, do not call it by hand)
     python tools/unasync.py [--check] --tree SRC DST     # every *.py of a tree, stale files removed
     python tools/unasync.py [--check] --file SRC DST     # one file
 
-The rules are the explicit table `RULES` below, applied in order to the whole text (code, strings
-and comments alike, so docstrings follow the code). Afterwards the result is scanned for tokens
-that must not survive in sync code (`async`, `await`, `asyncio`, `Async...`): such a token means
-the async source used something the table does not know, and the run fails instead of emitting
-broken code. Async source gets its primitives from `whitemarket/_concurrency.py` (hand-written
+The rules are the explicit table `RULES` below, applied in order to every NAME token (comments and
+prose are not touched; a string that is only a name or type expression is renamed too).
+Afterwards the result is scanned for tokens that must not survive in sync code (`async`, `await`,
+`asyncio`, `Async...`): such a token means the async source used something the table does not
+know, and the run fails instead of emitting broken code. Async source gets its primitives from
+`whitemarket/_concurrency.py` (hand-written
 pairs `AsyncLock`/`Lock`, `async_sleep`/`sleep`), never from `asyncio` directly.
 
 `--check` writes nothing and exits 1 when a destination differs from the rewrite of its source (the
@@ -40,39 +41,107 @@ def _rule(name: str, pattern: str, replacement: str) -> Rule:
     return Rule(name, re.compile(pattern), replacement)
 
 
-# Order matters: statement keywords first, then names.
+# Applied to every NAME token (never to comments or prose in strings), in order. `async` and `await`
+# are keywords handled apart: the token and the blank after it are deleted.
 RULES: tuple[Rule, ...] = (
-    _rule("async def", r"\basync def\b", "def"),
-    _rule("async with", r"\basync with\b", "with"),
-    _rule("async for", r"\basync for\b", "for"),
-    _rule("await", r"\bawait\s+", ""),
-    _rule("__aenter__", r"\b__aenter__\b", "__enter__"),
-    _rule("__aexit__", r"\b__aexit__\b", "__exit__"),
-    _rule("__aiter__", r"\b__aiter__\b", "__iter__"),
-    _rule("__anext__", r"\b__anext__\b", "__next__"),
-    _rule("StopAsyncIteration", r"\bStopAsyncIteration\b", "StopIteration"),
-    _rule("asynccontextmanager", r"\basynccontextmanager\b", "contextmanager"),
-    _rule("aclose", r"\baclose\b", "close"),
-    # AsyncX -> X: AsyncGraphQLBase, AsyncGeneratedClient, httpx.AsyncClient, AsyncLock, ...
-    _rule("AsyncX", r"\bAsync(?=[A-Z])", ""),
-    # async_x -> x: async_sleep, and the module name async_base_client.
-    _rule("async_x", r"\basync_(?=\w)", ""),
+    _rule("async def", r"\Aasync\Z", ""),
+    _rule("async with", r"\Aasync\Z", ""),
+    _rule("async for", r"\Aasync\Z", ""),
+    _rule("await", r"\Aawait\Z", ""),
+    _rule("__aenter__", r"\A__aenter__\Z", "__enter__"),
+    _rule("__aexit__", r"\A__aexit__\Z", "__exit__"),
+    _rule("__aiter__", r"\A__aiter__\Z", "__iter__"),
+    _rule("__anext__", r"\A__anext__\Z", "__next__"),
+    _rule("StopAsyncIteration", r"\AStopAsyncIteration\Z", "StopIteration"),
+    _rule("asynccontextmanager", r"\Aasynccontextmanager\Z", "contextmanager"),
+    _rule("aclose", r"\Aaclose\Z", "close"),
+    _rule("aread", r"\Aaread\Z", "read"),
+    _rule("aiter_x", r"\Aaiter_(?=bytes\Z|text\Z|lines\Z|raw\Z)", "iter_"),
+    _rule("anext", r"\Aanext\Z", "next"),
+    _rule("aiter", r"\Aaiter\Z", "iter"),
+    # AsyncX -> X and _AsyncX -> _X: AsyncGraphQLBase, httpx.AsyncClient, AsyncLock, ...
+    _rule("AsyncX", r"\A(_?)Async(?=[A-Z])", r"\1"),
+    # async_x -> x and _async_x -> _x: async_sleep, and the module name async_base_client.
+    _rule("async_x", r"\A(_?)async_(?=\w)", r"\1"),
     # Imports and paths: whitemarket._async.x -> whitemarket._sync.x
-    _rule("_async", r"\b_async\b", "_sync"),
+    _rule("_async", r"\A_async\Z", "_sync"),
 )
 
-_FORBIDDEN_NAMES = frozenset({"async", "await", "asyncio", "asynccontextmanager", "aclose"})
-_FORBIDDEN_NAME = re.compile(r"^(Async[A-Z]|async_|__a(enter|exit|iter|next)__$)")
+_KEYWORDS = frozenset({"async", "await"})
+_FORBIDDEN_NAMES = frozenset(
+    {"async", "await", "asyncio", "asynccontextmanager", "aclose", "aread", "anext", "aiter"}
+)
+_FORBIDDEN_NAME = re.compile(
+    r"^(_?Async[A-Z]|_?async_|aiter_|_async$|StopAsyncIteration$|__a(enter|exit|iter|next)__$)"
+)
+# A string that is only a name or a type expression (`__all__` entries, forward references)
+# follows the names; prose and anything else is left alone.
+_NAME_STRING = re.compile(r"""(["'])([A-Za-z_][\w.]*(?:\[[\w.,\[\] |]*\])?)\1""")
+_IDENTIFIER = re.compile(r"\w+")
 
 
 class UnasyncError(Exception):
     """The source holds something the rule table cannot turn into sync code."""
 
 
-def rewrite(text: str) -> str:
-    """Apply the rule table to the source text."""
+def _rename(name: str) -> str:
+    """The sync spelling of one identifier (keywords are not handled here)."""
     for rule in RULES:
-        text = rule.pattern.sub(rule.replacement, text)
+        if rule.name in ("async def", "async with", "async for", "await"):
+            continue
+        name = rule.pattern.sub(rule.replacement, name)
+    return name
+
+
+def _name_edit(
+    token: tokenize.TokenInfo, previous: list[tokenize.TokenInfo], text: str, begin: int, end: int
+) -> tuple[int, int, str] | None:
+    if token.string in _KEYWORDS:
+        while end < len(text) and text[end] in " \t":
+            end += 1
+        return (begin, end, "")
+    if token.string == "client" and [t.string for t in previous[-2:]] == ["_generated", "."]:
+        return (begin, end, "sync_client")
+    renamed = _rename(token.string)
+    return (begin, end, renamed) if renamed != token.string else None
+
+
+def _string_edit(token: tokenize.TokenInfo, begin: int, end: int) -> tuple[int, int, str] | None:
+    match = _NAME_STRING.fullmatch(token.string)
+    if match is None:
+        return None
+    body = _IDENTIFIER.sub(lambda m: _rename(m.group(0)), match.group(2))
+    if body == match.group(2):
+        return None
+    return (begin, end, f"{match.group(1)}{body}{match.group(1)}")
+
+
+def rewrite(text: str) -> str:
+    """Rewrite NAME tokens by the rule table; comments and prose stay as they are.
+
+    The module path `_generated.client` becomes `_generated.sync_client` (the sync generated
+    client lives in its own module).
+    """
+    starts = [0]
+    for line in io.StringIO(text).readlines():
+        starts.append(starts[-1] + len(line))
+    edits: list[tuple[int, int, str]] = []
+    previous: list[tokenize.TokenInfo] = []
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        begin = starts[token.start[0] - 1] + token.start[1]
+        end = starts[token.end[0] - 1] + token.end[1]
+        edit = None
+        if token.type == tokenize.NAME:
+            edit = _name_edit(token, previous, text, begin, end)
+        elif token.type == tokenize.STRING:
+            edit = _string_edit(token, begin, end)
+        if edit is not None:
+            edits.append(edit)
+        if token.type not in (tokenize.NL, tokenize.COMMENT):
+            previous.append(token)
+            del previous[:-2]
+    for begin, end, replacement in reversed(edits):
+        text = text[:begin] + replacement + text[end:]
     return text
 
 

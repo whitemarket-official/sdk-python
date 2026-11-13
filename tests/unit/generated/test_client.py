@@ -65,15 +65,18 @@ def test_mutation_runs_as_a_mutation(kind: str) -> None:
 
 
 @KINDS
-def test_a_raw_document_without_a_declared_type_runs_as_a_mutation(kind: str) -> None:
-    # Never retried unless the caller declares a query (CLAUDE.md rule 2; PHP RawDocument).
+def test_a_raw_document_without_a_declared_type_takes_it_from_the_document(kind: str) -> None:
+    # Only a document that is clearly a query is retried (CLAUDE.md rule 2; PHP RawDocument).
     harness = Harness(kind, {"test_ping": "pong"})
 
     data = harness.call("execute", "query Ping { test_ping }", {"n": Decimal("1.50")}, "Ping")
+    harness.call("execute", "mutation M { market_lifetime_all(value: 600) }")
 
-    (call,) = harness.calls
+    first, second = harness.calls
     assert data == {"test_ping": "pong"}
-    assert (call.operation_name, call.operation_type) == ("Ping", "mutation")
+    assert (first.operation_name, first.operation_type) == ("Ping", "query")
+    assert second.operation_type == "mutation"
+    call = first
     assert call.variables == {"n": Decimal("1.50")}
 
 
