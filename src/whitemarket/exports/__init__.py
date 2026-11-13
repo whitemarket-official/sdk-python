@@ -1,13 +1,15 @@
 """Export files: row models, streaming decoders, the price list, meta and affiliate links (SDK_SPEC
 3.10).
 
-Everything here is pure: no network and no files. The HTTP side feeds the decoders with the
-decompressed chunks of a body.
+Everything here is pure: no network and no files. The HTTP side (`whitemarket.ExportClient`) feeds
+the decoders with the decompressed chunks of a body.
 """
 
+from whitemarket.exports.conditional import ExportValidators, NotModified
 from whitemarket.exports.kinds import ExportFormat, ExportKind
 from whitemarket.exports.links import affiliate_link
 from whitemarket.exports.meta import ExportMeta, parse_meta
+from whitemarket.exports.options import ExportOptions
 from whitemarket.exports.price_list import PriceList
 from whitemarket.exports.rows import PriceRow, ProductRow
 from whitemarket.exports.stream import (
@@ -27,7 +29,10 @@ __all__ = [
     "ExportFormat",
     "ExportKind",
     "ExportMeta",
+    "ExportOptions",
+    "ExportValidators",
     "ExportWindow",
+    "NotModified",
     "PriceList",
     "PriceRow",
     "ProductRow",

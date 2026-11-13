@@ -58,6 +58,9 @@ class HttpServer:
                     record.requests.append(seen)
                 respond(self, seen)
 
+            def do_GET(self) -> None:
+                self.do_POST()  # a GET has no body: Content-Length is absent and reads as 0
+
             def log_message(self, format: str, *args: Any) -> None:
                 return
 

@@ -6,7 +6,9 @@ The transport asks for `Accept-Encoding: gzip` only and decodes it here instead 
 do it, because httpx decompresses a whole network chunk in one step (no output bound).
 """
 
+import re
 import zlib
+from collections.abc import Iterator
 from typing import Final
 
 # The most one decompression step may produce; keeps a step small however the limit is set.
@@ -19,22 +21,74 @@ class BodyError(Exception):
     """A body that cannot be used. The message names the problem, never the content."""
 
 
+_TRAILING: Final = "the response body has data after the end of the gzip stream"
+
+
 class BodyTooLargeError(BodyError):
     """The decompressed body is longer than the limit."""
 
 
+def body_is_gzip(content_encoding: str | None) -> bool:
+    """Whether a `Content-Encoding` is gzip; anything but identity or gzip raises `BodyError`."""
+    encoding = (content_encoding or "").strip().lower()
+    if encoding in ("", "identity"):
+        return False
+    if encoding in ("gzip", "x-gzip"):
+        return True
+    raise BodyError("the response has an unsupported content encoding")
+
+
+_CONTENT_LENGTH: Final = re.compile(r"[0-9]{1,18}", re.ASCII)
+
+
+def announced_length(header: str | None) -> int | None:
+    """The `Content-Length` a response announces; `None` when the header is absent (no check).
+
+    One value, or several identical ones (RFC 9110 8.6), give that number. Anything else (`+1000`,
+    `1000, 999`, letters, an empty value) raises `BodyError`: the length cannot be trusted, so the
+    body cannot be checked against it.
+    """
+    if header is None:
+        return None
+    values = {part.strip() for part in header.split(",")}
+    if len(values) != 1:
+        raise BodyError("the response has an invalid Content-Length")
+    (value,) = values
+    if _CONTENT_LENGTH.fullmatch(value) is None:
+        raise BodyError("the response has an invalid Content-Length")
+    return int(value)
+
+
 class BodyAccumulator:
-    """Collects a body up to `limit` decompressed bytes.
+    """Decodes a body, counting DECOMPRESSED bytes against `limit` (`None`: no limit).
 
     `truncate=False` (a success body): more than `limit` bytes raise `BodyTooLargeError`, and a
     gzip body that ends before its end marker raises `BodyError`. `truncate=True` (an error body,
     kept only as a diagnostic excerpt): the body is cut at `limit` and whatever decoded before a
     failure is kept.
+
+    `strict=True` is for a body that must be complete (exports): data after the end of the gzip
+    stream is an error instead of being ignored, and `expected_raw_bytes` (the announced
+    `Content-Length`, counted on the raw bytes) must match exactly.
+
+    `feed` keeps the decoded bytes for `finish`; `decode` hands them to the caller and keeps none
+    (a streamed body).
     """
 
-    def __init__(self, *, limit: int, gzip: bool, truncate: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        limit: int | None,
+        gzip: bool,
+        truncate: bool = False,
+        strict: bool = False,
+        expected_raw_bytes: int | None = None,
+    ) -> None:
         self._limit = limit
         self._truncate = truncate
+        self._strict = strict
+        self._expected = expected_raw_bytes
+        self._raw = 0
         self._inflater = zlib.decompressobj(_GZIP_WINDOW) if gzip else None
         self._parts: list[bytes] = []
         self._size = 0
@@ -47,25 +101,48 @@ class BodyAccumulator:
         return self._done
 
     def feed(self, chunk: bytes) -> None:
+        """Take a raw chunk and keep its decoded bytes (`finish` returns them all)."""
+        self._parts.extend(self.decode(chunk))
+
+    def decode(self, chunk: bytes) -> Iterator[bytes]:
+        """Take a raw chunk; yield its decoded bytes, one bounded step at a time.
+
+        The generator must be consumed: the chunk is processed as it runs. A step is at most about
+        1 MiB, whatever the chunk decompresses to.
+        """
+        self._count_raw(len(chunk))
         if self._done:
+            if self._strict and chunk:
+                raise BodyError(_TRAILING)
             return
         if self._inflater is None:
-            self._append(chunk)
+            yield from self._append(chunk)
             return
-        self._inflate(chunk)
+        yield from self._inflate(chunk)
 
     def finish(self) -> bytes:
-        """The body; a gzip stream that stopped early is an error unless truncating."""
-        if (
-            self._inflater is not None
-            and not self._inflater.eof
-            and not self._done
-            and not self._truncate
-        ):
-            raise BodyError("the gzip body ends before its end marker")
+        """The kept body; a gzip stream that stopped early or a short body is an error.
+
+        (Unless truncating, where the body is a diagnostic excerpt and whatever arrived is it.)
+        """
+        if not self._truncate:
+            if self._inflater is not None and not self._inflater.eof and not self._done:
+                raise BodyError("the gzip body ends before its end marker")
+            if self._expected is not None and self._raw < self._expected:
+                raise BodyError("the response body is shorter than Content-Length")
         return b"".join(self._parts)
 
-    def _inflate(self, chunk: bytes) -> None:
+    def _count_raw(self, size: int) -> None:
+        self._raw += size
+        if self._expected is not None and self._raw > self._expected:
+            raise BodyError("the response body is longer than Content-Length")
+
+    def _step_room(self) -> int:
+        if self._limit is None:
+            return _STEP_BYTES
+        return min(self._limit - self._size + 1, _STEP_BYTES)
+
+    def _inflate(self, chunk: bytes) -> Iterator[bytes]:
         inflater = self._inflater
         if inflater is None:
             return
@@ -75,28 +152,31 @@ class BodyAccumulator:
             # an error body loses of its decoded start.
             piece, pending = pending[:_SLICE_BYTES], pending[_SLICE_BYTES:]
             while piece and not self._done:
-                room = min(self._limit - self._size + 1, _STEP_BYTES)
                 try:
-                    out = inflater.decompress(piece, room)
+                    out = inflater.decompress(piece, self._step_room())
                 except zlib.error:
                     if self._truncate:
                         self._done = True
                         return
                     raise BodyError("the gzip body is corrupt") from None
-                self._append(out)
+                yield from self._append(out)
                 if inflater.eof:
                     self._done = True  # a member ended: bytes after it are not part of the body
+                    if self._strict and (inflater.unused_data or pending):
+                        raise BodyError(_TRAILING)
                     return
                 piece = inflater.unconsumed_tail
 
-    def _append(self, data: bytes) -> None:
-        room = self._limit - self._size
-        if len(data) > room:
-            if not self._truncate:
-                raise BodyTooLargeError(f"the response body is longer than {self._limit} bytes")
-            data = data[:room]
-            self._done = True
-        self._parts.append(data)
+    def _append(self, data: bytes) -> Iterator[bytes]:
+        if self._limit is not None:
+            room = self._limit - self._size
+            if len(data) > room:
+                if not self._truncate:
+                    raise BodyTooLargeError(f"the response body is longer than {self._limit} bytes")
+                data = data[:room]
+                self._done = True
         self._size += len(data)
-        if self._size >= self._limit and self._truncate:
+        if data:
+            yield data
+        if self._limit is not None and self._size >= self._limit and self._truncate:
             self._done = True

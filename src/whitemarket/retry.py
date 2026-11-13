@@ -1,6 +1,7 @@
 """Retry policy of the transport: pure rules, no IO (SDK_SPEC 1.4)."""
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
@@ -13,6 +14,14 @@ RETRY_AFTER_STATUSES: Final = frozenset({429, 503})
 # A delay-seconds value too long to matter; the caller decides what to do with it.
 _SATURATED_SECONDS: Final = 999_999_999
 _DIGITS: Final = re.compile(r"[0-9]+", re.ASCII)
+
+
+_TOO_MANY_REQUESTS: Final = 429
+_SERVER_ERRORS: Final = range(500, 600)
+
+
+def _is_read_retryable(status: int) -> bool:
+    return status == _TOO_MANY_REQUESTS or status in _SERVER_ERRORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +66,33 @@ class RetryPolicy:
 
         `status` is `None` when no response came (a network error before the answer).
         """
-        if operation_type != "query" or attempt >= self.max_attempts:
+        if operation_type != "query":
+            return False
+        return self._may_repeat(attempt, status, retry_after, _RETRYABLE_STATUSES.__contains__)
+
+    def should_retry_read(
+        self, attempt: int, status: int | None, retry_after: float | None = None
+    ) -> bool:
+        """The same for a read of a file (an export GET): 429 and every 5xx (500-599) are retried.
+
+        `status` is `None` when no response came (a network error before the answer).
+        """
+        return self._may_repeat(attempt, status, retry_after, _is_read_retryable)
+
+    def _may_repeat(
+        self,
+        attempt: int,
+        status: int | None,
+        retry_after: float | None,
+        retryable: Callable[[int], bool],
+    ) -> bool:
+        if attempt >= self.max_attempts:
             return False
         if status is None:
             return True
         if retry_after is not None and status in RETRY_AFTER_STATUSES:
             return False
-        return status in _RETRYABLE_STATUSES
+        return retryable(status)
 
     def delay(self, attempt: int, random: float) -> float:
         """Seconds to wait after attempt number `attempt` (1-based) failed.
@@ -77,6 +106,16 @@ class RetryPolicy:
         except OverflowError:
             ceiling = self.max_delay
         return random * ceiling
+
+
+def retry_after_for(status: int, header: str | None, now: datetime) -> int | None:
+    """The `Retry-After` seconds that count for `status`: only a 429 or 503 carries them.
+
+    On every other status the header is ignored (SDK_SPEC 1.4).
+    """
+    if status not in RETRY_AFTER_STATUSES:
+        return None
+    return parse_retry_after(header, now)
 
 
 def parse_retry_after(value: str | None, now: datetime) -> int | None:

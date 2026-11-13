@@ -5,6 +5,7 @@ ids the caller chose and JSON paths only.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 
 
 class WhiteMarketError(Exception):
@@ -13,6 +14,17 @@ class WhiteMarketError(Exception):
 
 class TransportError(WhiteMarketError):
     """DNS, TLS, connect, timeout or body read failure."""
+
+
+def render_path(path: Sequence[str | int]) -> str:
+    """`("prices", 3, "price")` as `prices[3].price`: an integer is an index, a name is a key."""
+    text = ""
+    for part in path:
+        if isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text += f".{part}" if text else part
+    return text
 
 
 class DecodeError(WhiteMarketError):
@@ -25,7 +37,7 @@ class DecodeError(WhiteMarketError):
     def __init__(self, reason: str, path: Sequence[str | int] = ()) -> None:
         self.reason = reason
         self.path: tuple[str | int, ...] = tuple(path)
-        location = ".".join(str(part) for part in self.path)
+        location = render_path(self.path)
         super().__init__(f"{location}: {reason}" if location else reason)
 
 
@@ -54,8 +66,32 @@ class GeneralExportError(ExportError):
 
 
 class StaleExportError(ExportError):
-    """The export file is older than the caller allows."""
+    """The export file is older than the caller allows (`max_age`).
+
+    `data_as_of` is the age marker the server reported (timezone-aware), `max_age_seconds` the
+    limit the caller set.
+    """
+
+    def __init__(self, data_as_of: datetime, max_age_seconds: float) -> None:
+        self.data_as_of = data_as_of
+        self.max_age_seconds = max_age_seconds
+        super().__init__(
+            f"the export data is older than {max_age_seconds:g} s "
+            f"(data_as_of {data_as_of.isoformat()})"
+        )
 
 
 class LiveConnectionError(WhiteMarketError):
-    """SSE or WebSocket protocol or authentication failure."""
+    """SSE or WebSocket protocol or authentication failure that ends a live session.
+
+    `code` is the close, disconnect or error code (None when there is none); `reason` is server
+    text reduced to printable ASCII (SDK_SPEC 3.11), not redacted. The exception text names the
+    code only, because a message is often logged: callers branch on `code`, never on `reason`.
+    """
+
+    def __init__(self, code: int | None = None, reason: str = "") -> None:
+        self.code = code
+        self.reason = reason
+        super().__init__(
+            "live connection failed" if code is None else f"live connection failed: code {code}"
+        )

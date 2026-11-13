@@ -237,8 +237,25 @@ def test_a_decode_error_holds_the_path_and_the_reason() -> None:
     error = DecodeError("bool_parsing: not a bool", ("a", 0, "b"))
 
     assert (error.path, error.reason) == (("a", 0, "b"), "bool_parsing: not a bool")
-    assert str(error) == "a.0.b: bool_parsing: not a bool"
+    assert str(error) == "a[0].b: bool_parsing: not a bool"
     assert str(DecodeError("only a reason")) == "only a reason"
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        pytest.param(("prices", 3, "price"), "prices[3].price", id="name index name"),
+        pytest.param(("products", 3), "products[3]", id="name index"),
+        pytest.param(("meta", "items"), "meta.items", id="names only"),
+        pytest.param((0, "a"), "[0].a", id="leading index"),
+        pytest.param(("a", 1, 2, "b"), "a[1][2].b", id="nested indexes"),
+        pytest.param(("a",), "a", id="one name"),
+    ],
+)
+def test_a_decode_error_path_renders_indexes_in_brackets(
+    path: tuple[str | int, ...], text: str
+) -> None:
+    assert str(DecodeError("bad", path)) == f"{text}: bad"
 
 
 def test_the_outcome_unknown_errors_name_what_the_caller_needs() -> None:

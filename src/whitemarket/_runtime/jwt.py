@@ -22,6 +22,16 @@ def token_expiry(jwt: str, now: datetime) -> datetime:
     return now + timedelta(seconds=_lifetime_seconds(jwt, int(now.timestamp())))
 
 
+def seconds_left(jwt: str, now: datetime) -> float | None:
+    """Seconds until the `exp` claim of `jwt` (negative once past), `None` without an integer `exp`.
+
+    Read without verifying the signature. The live connection uses it where Centrifugo's connect
+    reply `ttl` (the same `exp`, counted by the server) is not exposed by the WebSocket library.
+    """
+    exp = _int_claim(_claims(jwt), "exp")
+    return None if exp is None else exp - now.timestamp()
+
+
 def _lifetime_seconds(jwt: str, now: int) -> int:
     claims = _claims(jwt)
     maximum = int(DOCUMENTED_LIFETIME.total_seconds())

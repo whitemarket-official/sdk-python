@@ -14,6 +14,12 @@ _WS_PATH: Final = "/ws_endpoint"
 # Module-level so a test can allow a plain-HTTP loopback server; there is no switch in the API.
 _ORIGIN_SCHEMES: tuple[str, ...] = ("https",)
 
+
+def allowed_origin_schemes() -> tuple[str, ...]:
+    """The URL schemes an origin may have (read at call time: tests widen it for loopback)."""
+    return _ORIGIN_SCHEMES
+
+
 _ORIGIN: Final = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://[^/?#\s@]+", re.ASCII)
 _PATH: Final = re.compile(r"/[^?#\s]*", re.ASCII)
 _USER_AGENT_SUFFIX: Final = re.compile(r"[\x20-\x7E]+", re.ASCII)

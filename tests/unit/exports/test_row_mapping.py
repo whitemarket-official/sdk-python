@@ -128,7 +128,7 @@ def test_a_bad_price_field_fails_at_its_path(changes: dict[str, Any], path: str)
         list(iter_price_rows(chunked(body, 100)))
 
     assert error.value.path == ("prices", 1, path)
-    assert str(error.value).startswith(f"prices.1.{path}")
+    assert str(error.value).startswith(f"prices[1].{path}")
 
 
 @pytest.mark.parametrize("key", sorted(PRICE_ROW.keys() - {"cheapest_float", "inspect_link"}))
