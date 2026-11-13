@@ -14,7 +14,9 @@ authors = [{ name = "WhiteMarket" }]
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.28",
-  "pydantic>=2",
+  # 2.8: alias_generator with populate_by_name in the generated models, callable discriminators,
+  # Field(deprecated=...) (ADR 0001); the lowest-dependency CI job checks the floor.
+  "pydantic>=2.8",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -36,6 +38,9 @@ live = ["centrifuge-python>=0.7"]
 # Test runner only: what the runtime-version matrix installs.
 test = [
   "coverage==7.17.3",
+  # Parses the operation documents in the selection-invariant tests (SDK_SPEC 1.2); the version the ariadne-codegen
+  # environment resolves. Used by tests only, never imported by src/.
+  "graphql-core==3.2.14",
   "pytest==9.2.0",
   "pytest-asyncio==1.5.0",
   "pytest-cov==7.1.0",
@@ -119,6 +124,7 @@ typeCheckingMode = "strict"
 [tool.pytest]
 minversion = "9.0"
 testpaths = ["tests"]
+pythonpath = ["tools", "tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 filterwarnings = ["error"]
 asyncio_mode = "auto"

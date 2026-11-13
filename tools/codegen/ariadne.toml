@@ -1,0 +1,29 @@
+# ariadne-codegen configuration (ADR 0001). tools/codegen/generate.sh runs it from the repository root with
+# PYTHONPATH=tools/codegen in the `.venv-codegen` environment; `make codegen` is the entry point.
+# generate.sh rewrites queries_path and target_package_path for the `codegen-check` run.
+[tool.ariadne-codegen]
+schema_path = "schema/partner.graphql"
+queries_path = "var/codegen/documents"
+target_package_name = "_generated"
+target_package_path = "src/whitemarket"
+client_name = "AsyncGeneratedClient"
+client_file_name = "client"
+base_client_name = "AsyncBaseClient"
+base_client_file_path = "tools/codegen/async_base_client.py"
+base_client_module_name = "async_base_client"
+async_client = true
+include_comments = "stable"            # replaced by the plugin's DO NOT EDIT header (get_file_comment)
+convert_to_snake_case = true
+include_all_inputs = true
+include_all_enums = true
+include_typename = true                # required: unions decode by __typename
+multipart_uploads = false              # no Upload class; FileUpload is not sent (JSON transport)
+show_deprecation_warnings = false      # deprecations are marked in code instead
+use_alias_generator = true             # inputs construct by Python name under mypy/pyright
+plugins = ["ariadne_plugin.WhiteMarketPlugin"]
+
+[tool.ariadne-codegen.scalars.Uuid]
+type = "str"
+
+[tool.ariadne-codegen.scalars.DateTime]
+type = "pydantic.AwareDatetime"

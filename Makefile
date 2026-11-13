@@ -31,12 +31,14 @@ install: ## Create the venv and install the package editable with the dev, expor
 	@test -x $(PY) || $(PYTHON) -m venv $(VENV)
 	$(PY) -m pip install --quiet --upgrade pip
 	$(PY) -m pip install --quiet -e '.[$(INSTALL_EXTRAS)]'
+	@$(MAKE) --no-print-directory $(CODEGEN_STAMP)
 
 .PHONY: install-codegen
 install-codegen: ## Create the isolated codegen venv (ariadne-codegen, extra "codegen")
 	@test -x $(CODEGEN_VENV)/bin/python || $(PYTHON) -m venv $(CODEGEN_VENV)
 	$(CODEGEN_VENV)/bin/python -m pip install --quiet --upgrade pip
 	$(CODEGEN_VENV)/bin/python -m pip install --quiet -e '.[codegen]'
+	@touch $(CODEGEN_VENV)/.installed
 
 ## --- checks -------------------------------------------------------------------
 
@@ -93,19 +95,34 @@ CODEGEN_NODE := cd tools/codegen && npm ci --silent --no-audit --no-fund && node
 schema: ## Fetch the partner schema by introspection
 	cd tools/codegen && npm ci --silent --no-audit --no-fund && node fetch-schema.mjs
 
-# Hook points for P1 (ADR 0001): the Python generated layer (ariadne-codegen in $(CODEGEN_VENV)) into
-# src/whitemarket/_generated and the sync variant (tools/unasync.py: _async -> _sync). Both are added to `codegen`
-# and to `codegen-check` (regenerate into var/codegen-check, then diff -r).
-.PHONY: codegen
-codegen: ## Regenerate operations and fragments from the committed schema
-	@$(CODEGEN_NODE) generate-operations.mjs
+# Python generated layer (ADR 0001): node generator -> operations and fragments, then tools/codegen/generate.sh:
+# ariadne-codegen (in $(CODEGEN_VENV)) on the async client -> src/whitemarket/_generated, then tools/unasync.py for
+# the sync client and for src/whitemarket/_async -> src/whitemarket/_sync, then ruff format of _sync.
+# The codegen venv is created on first use (stamp file, refreshed when pyproject.toml changes).
+CODEGEN_STAMP := $(CODEGEN_VENV)/.installed
 
+$(CODEGEN_STAMP): pyproject.toml
+	@$(MAKE) --no-print-directory install-codegen
+	@touch $@
+
+.PHONY: codegen
+codegen: $(CODEGEN_STAMP) ## Regenerate operations, fragments, src/whitemarket/_generated and _sync from the committed schema
+	@$(CODEGEN_NODE) generate-operations.mjs
+	@RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh .
+
+# Regenerates everything into var/codegen-check and fails on any difference with the committed files.
 .PHONY: codegen-check
-codegen-check: ## Regenerate into var/codegen-check and fail on any diff
+codegen-check: $(CODEGEN_STAMP) ## Regenerate into var/codegen-check and fail on any diff
 	@rm -rf var/codegen-check && mkdir -p var/codegen-check
-	@$(QC) codegen-check bash -c '$(CODEGEN_NODE) generate-operations.mjs --out-dir ../../var/codegen-check \
-		&& cd ../.. && diff -r graphql/operations var/codegen-check/graphql/operations \
-		&& diff -r graphql/fragments var/codegen-check/graphql/fragments'
+	@$(QC) codegen-check bash -c 'set -e; \
+		($(CODEGEN_NODE) generate-operations.mjs --out-dir ../../var/codegen-check); \
+		RUFF=$(BIN)/ruff CODEGEN_VENV=$(CODEGEN_VENV) tools/codegen/generate.sh var/codegen-check; \
+		rc=0; \
+		diff -r graphql/operations var/codegen-check/graphql/operations || rc=1; \
+		diff -r graphql/fragments var/codegen-check/graphql/fragments || rc=1; \
+		diff -r -x __pycache__ src/whitemarket/_generated var/codegen-check/src/whitemarket/_generated || rc=1; \
+		diff -r -x __pycache__ src/whitemarket/_sync var/codegen-check/src/whitemarket/_sync || rc=1; \
+		exit $$rc'
 
 ## --- runtime matrix -----------------------------------------------------------
 

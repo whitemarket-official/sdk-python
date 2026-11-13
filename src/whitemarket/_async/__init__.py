@@ -1,1 +1,1 @@
-"""Async implementation of the client; the source of the generated sync variant."""
+"""IO code of the client: hand-written as async, with a generated sync twin."""
