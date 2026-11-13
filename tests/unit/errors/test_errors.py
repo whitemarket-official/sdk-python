@@ -1,5 +1,8 @@
 """The error hierarchy (SDK_SPEC 1.5): shape, categories and the NotFoundError rule."""
 
+from collections.abc import Callable
+from functools import partial
+
 import pytest
 
 from whitemarket import errors
@@ -66,8 +69,8 @@ def test_everything_is_a_whitemarket_error_and_an_exception() -> None:
 @pytest.mark.parametrize(
     ("error", "status", "retry_after"),
     [
-        (HttpError(418, "teapot"), 418, None),
-        (BadRequestError("x"), 400, None),
+        (HttpError(418, b"teapot"), 418, None),
+        (BadRequestError(b"x"), 400, None),
         (AuthenticationError(), 401, None),
         (RateLimitError(retry_after=2.5), 429, 2.5),
         (RateLimitError(), 429, None),
@@ -87,10 +90,32 @@ def test_http_errors_carry_status_excerpt_and_retry_after(
 
 
 def test_the_body_excerpt_is_kept_apart_from_the_message() -> None:
-    error = HttpError(500, "excerpt")
+    error = HttpError(500, b"excerpt")
 
     assert error.body_excerpt == "excerpt"
     assert "excerpt" not in str(error)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(partial(HttpError, 418), id="HttpError"),
+        pytest.param(BadRequestError, id="BadRequestError"),
+        pytest.param(AuthenticationError, id="AuthenticationError"),
+        pytest.param(RateLimitError, id="RateLimitError"),
+        pytest.param(ServerError, id="ServerError"),
+        pytest.param(ServiceUnavailableError, id="ServiceUnavailableError"),
+    ],
+)
+def test_the_body_excerpt_is_always_redacted(make: Callable[[bytes], HttpError]) -> None:
+    error = make(b'{"accessToken":"synthetic-secret-value","code":1}')
+
+    assert error.body_excerpt == '{"accessToken":"***","code":1}'
+    assert "synthetic-secret-value" not in repr(error.__dict__)
+
+
+def test_a_missing_body_gives_an_empty_excerpt() -> None:
+    assert HttpError(500).body_excerpt == ""
 
 
 def _payload(*categories: str | None, message: str = "m") -> list[object]:
