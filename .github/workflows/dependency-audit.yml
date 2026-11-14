@@ -1,0 +1,175 @@
+name: Dependency audit
+
+# SPEC_SYNC 2026-11-13 item 3. Daily pip-audit of the pinned environment (every dependency and extra declared in
+# pyproject.toml, resolved to exact versions). When an advisory has a fixed version and the package is an exact pin
+# in pyproject.toml, the pin is raised and a PR is opened or updated. Anything else (a transitive package, a
+# lower-bound range, no fixed version) fails the run, so the failure notification reaches a human.
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit
+  cancel-in-progress: false
+
+jobs:
+  # Holds a read-only token. Resolution uses `pip install --dry-run --only-binary=:all:` on a requirements list
+  # derived from pyproject.toml: no wheel is installed and no sdist is built, so no dependency code runs; the repo's
+  # own package is never built. The write token lives in open-pr, which applies the patch as data.
+  audit:
+    name: Audit the pinned environment, raise affected pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.fix.outputs.changed }}
+      remaining: ${{ steps.fix.outputs.remaining }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      # The audit tool itself, the exact pin of the dev extra (wheel only), not the audited dependencies.
+      - name: Install pip-audit
+        run: |
+          version=$(python tools/ci/audit_fix.py requirements pyproject.toml | sed -n 's/^pip-audit==//p')
+          python -m pip install --quiet --only-binary=:all: "pip-audit==$version"
+
+      - name: Audit and raise pins
+        id: fix
+        run: |
+          out="$RUNNER_TEMP/dependency-audit"
+          mkdir -p "$out"
+          report="$out/report.md"
+          : > "$report"
+          # ariadne-codegen needs a ruff range that conflicts with the dev pin: resolved as its own group.
+          python tools/ci/audit_fix.py requirements pyproject.toml > "$out/main.in"
+          python tools/ci/audit_fix.py requirements pyproject.toml codegen > "$out/codegen.in"
+          # Each group is resolved and audited on its own: both hold a different `ruff`, and pip-audit rejects a
+          # requirements file with one package twice.
+          remaining=false
+          for group in main codegen; do
+            python -m pip install --dry-run --ignore-installed --only-binary=:all: --quiet \
+              --report "$out/$group.json" -r "$out/$group.in"
+            python - "$out/$group.json" <<'PY' > "$out/$group-pins.txt"
+          import json, sys
+          pins = {f'{i["metadata"]["name"]}=={i["metadata"]["version"]}' for i in json.load(open(sys.argv[1]))["install"]}
+          print("\n".join(sorted(pins)))
+          PY
+            # Exit 1 means "vulnerabilities found" (JSON still written); --strict fails when a package cannot be audited.
+            status=0
+            pip-audit --strict --no-deps --disable-pip --progress-spinner off -f json -o "$out/$group-audit.json" \
+              -r "$out/$group-pins.txt" || status=$?
+            if [ "$status" -gt 1 ] || [ ! -s "$out/$group-audit.json" ]; then
+              echo "::error::pip-audit did not produce a result for the $group group (exit $status)"
+              exit 2
+            fi
+            status=0
+            python tools/ci/audit_fix.py fix "$out/$group-audit.json" pyproject.toml "$report" || status=$?
+            case "$status" in
+              0) ;;
+              1) remaining=true ;;
+              *) exit "$status" ;;
+            esac
+          done
+          echo "remaining=$remaining" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- pyproject.toml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --binary -- pyproject.toml > "$out/changes.patch"
+          fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write PR body
+        if: steps.fix.outputs.changed == 'true'
+        env:
+          REMAINING: ${{ steps.fix.outputs.remaining }}
+        run: |
+          out="$RUNNER_TEMP/dependency-audit"
+          {
+            echo "Automated security update: \`pip-audit\` found advisories with a fixed version, so the affected"
+            echo "exact pins in \`pyproject.toml\` were raised."
+            echo
+            if [ "$REMAINING" = "true" ]; then
+              echo "> **Some advisories remain** (no exact pin to raise or no fixed version); see below."
+              echo
+            fi
+            cat "$out/report.md"
+            echo "### Reviewer checklist"
+            echo
+            echo "- [ ] CI is green (if it did not start, close and reopen the PR or re-run it by hand)."
+            echo "- [ ] Only pins changed; any new runtime package still needs an ADR (CLAUDE.md rule 10)."
+          } > "$out/pr-body.md"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.fix.outputs.changed == 'true'
+        with:
+          name: dependency-audit
+          path: |
+            ${{ runner.temp }}/dependency-audit/changes.patch
+            ${{ runner.temp }}/dependency-audit/pr-body.md
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail on advisories that need a human
+        if: steps.fix.outputs.remaining == 'true'
+        run: |
+          echo "::error::pip-audit reports advisories that no pin change fixes; see the job summary"
+          exit 1
+
+  open-pr:
+    name: Open PR
+    needs: audit
+    # Runs also when audit failed on advisories that need a human, as long as a pin was raised.
+    if: always() && needs.audit.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dependency-audit
+          path: ${{ runner.temp }}/dependency-audit
+
+      # The patch is data: git apply writes a file, nothing from it runs. Any path other than pyproject.toml fails.
+      - name: Apply the patch
+        run: |
+          git apply --binary "$RUNNER_TEMP/dependency-audit/changes.patch"
+          unexpected=$(git status --porcelain --untracked-files=all | cut -c4- | grep -vxE 'pyproject\.toml' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::the patch touches paths other than pyproject.toml"
+            echo "$unexpected"
+            exit 1
+          fi
+
+      # PRs opened with the default GITHUB_TOKEN do not trigger the CI workflow (peter-evans/create-pull-request
+      # docs, "Triggering further workflow runs"). SCHEMA_SYNC_TOKEN (GitHub App or fine-grained PAT with
+      # contents + pull-requests write on this repository) makes CI run on the PR; without it, CI must be re-run by hand.
+      - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          token: ${{ secrets.SCHEMA_SYNC_TOKEN || github.token }}
+          branch: dependency-audit/auto
+          base: main
+          delete-branch: true
+          commit-message: 'fix(deps): raise pins of packages with security advisories'
+          title: 'fix(deps): raise pins of packages with security advisories'
+          body-path: ${{ runner.temp }}/dependency-audit/pr-body.md
+          labels: dependencies
+          add-paths: |
+            pyproject.toml

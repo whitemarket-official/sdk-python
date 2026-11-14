@@ -1,0 +1,142 @@
+name: Release
+
+# SDK_SPEC 6.3 (tag-driven): pushing a tag vX.Y.Z runs make check, builds the sdist and wheel of the tagged commit,
+# attests their build provenance, publishes them to PyPI by trusted publishing (OIDC, no API token anywhere) and
+# creates the GitHub Release. The tag must equal the package version and be reachable from main.
+#
+# One-time setup outside this repo's code: a GitHub environment `release` (required reviewers, tag rule `v*.*.*`)
+# and a trusted publisher on PyPI for this repository, workflow `release.yml`, environment `release`.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/codegen/package-lock.json
+      - run: make install
+      - run: make check VERBOSE=1
+
+  build:
+    name: Verify the tag, build
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Full history so the job can verify that the tag is reachable from main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$'; then
+            echo "::error::tag '$TAG' is not a version tag (vX.Y.Z, optionally followed by aN, bN or rcN)"
+            exit 1
+          fi
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/whitemarket/_version.py)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag '$TAG' does not equal the package version 'v$version' (src/whitemarket/_version.py)"
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag '$TAG' is not on main"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # make build = python -m build + twine check --strict (Makefile).
+      - run: make install
+      - run: make build VERBOSE=1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job with id-token: write. It downloads what the build job made and runs no repository code.
+  publish:
+    name: Attest and publish to PyPI
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: release
+      url: https://pypi.org/project/whitemarket-sdk/
+    # id-token mints the OIDC token for PyPI trusted publishing and for the attestation; attestations and
+    # artifact-metadata persist the attestation (permissions listed in the README of actions/attest v4.2.2).
+    permissions:
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      # Trusted publishing: no username or password. `attestations` defaults to true (PEP 740 publish attestations);
+      # `packages-dir` defaults to dist (inputs of action.yml at v1.14.3).
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    name: GitHub Release
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "$TAG" in *a[0-9]* | *b[0-9]* | *rc[0-9]*) flags+=(--prerelease) ;; esac
+          (cd dist && sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS")
+          gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" "${flags[@]}" \
+            dist/* "$RUNNER_TEMP/SHA256SUMS"

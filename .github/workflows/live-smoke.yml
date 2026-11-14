@@ -1,0 +1,60 @@
+name: Live smoke
+
+# Read-only calls against the real partner API (SDK_SPEC 6.4): every generated query, export meta + 100 rows, one
+# live products event over WebSocket and SSE. Never runs a mutation other than auth_token (tools/live_smoke/guard.py).
+# Needs the repository secret WM_PARTNER_TOKEN of a dedicated test partner account; without it the job only prints
+# a notice.
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Live smoke (read-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # A boolean only: the secret value itself is exposed to the smoke step alone.
+      HAS_TOKEN: ${{ secrets.WM_PARTNER_TOKEN != '' }}
+    steps:
+      - name: Token check
+        if: env.HAS_TOKEN != 'true'
+        run: echo "::notice::Secret WM_PARTNER_TOKEN is not set; the live smoke is skipped."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_TOKEN == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # The smoke needs the runtime and the extras of exports and live, nothing from the dev tools.
+      - name: Install the package
+        if: env.HAS_TOKEN == 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet -e '.[exports,live]'
+      - name: Smoke
+        if: env.HAS_TOKEN == 'true'
+        env:
+          WHITEMARKET_PARTNER_TOKEN: ${{ secrets.WM_PARTNER_TOKEN }}
+        run: make live-smoke
+      # The report holds step names, PASS/FAIL, milliseconds, exception classes and categories only.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && env.HAS_TOKEN == 'true'
+        with:
+          name: live-smoke-report
+          path: var/live-smoke/report.md
+          if-no-files-found: warn
+          retention-days: 30
