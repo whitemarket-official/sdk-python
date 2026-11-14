@@ -1,0 +1,55 @@
+"""What the HTTP transports (GraphQL, export) make of one answer or of the lack of one.
+
+Hand-written async; the sync twin is generated (tools/unasync.py).
+"""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import httpx
+
+from whitemarket._runtime.body import BodyAccumulator, BodyBytes, BodyError, body_is_gzip
+
+# An error body is read up to what the redactor still handles.
+ERROR_BODY_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class HttpReply:
+    """A status, its `Retry-After` header and the body (the whole of a success, an excerpt of an
+    error)."""
+
+    status: int
+    retry_after_header: str | None
+    body: BodyBytes
+
+
+@dataclass(frozen=True, slots=True)
+class NoReply:
+    """A failure before any response arrived: the one kind of failure that is retried."""
+
+    what: str
+
+
+def failure_name(error: Exception) -> str:
+    """A failure by its class name only: the message of an httpx error holds the request."""
+    return f"request failed ({type(error).__name__})"
+
+
+async def read_error_excerpt(response: httpx.Response, check: Callable[[], None]) -> bytes:
+    """The start of an error body (at most `ERROR_BODY_BYTES` decoded), for the diagnostic text.
+
+    A content encoding that cannot be decoded gives an empty excerpt. `check` is called between
+    chunks (the sync deadline poll); it may raise.
+    """
+    try:
+        gzip = body_is_gzip(response.headers.get("content-encoding"))
+    except BodyError:
+        return b""
+    accumulator = BodyAccumulator(limit=ERROR_BODY_BYTES, gzip=gzip, truncate=True)
+    async for chunk in response.aiter_raw():
+        accumulator.feed(chunk)
+        if accumulator.done:
+            break
+        check()
+    return bytes(accumulator.finish())

@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
-from support.flavors import FLAVORS, Flavor
+from support.flavors import Flavor
 from support.http import Chunks, Script, data, reply
 from whitemarket import RetryPolicy, Secret, Timeouts
 from whitemarket._runtime.transport_config import TransportConfig
@@ -30,10 +30,8 @@ URL = "https://api.test/graphql/partner"
 NOW = datetime(2026, 11, 6, 7, 28, 0, tzinfo=UTC)
 AUTH = {"Authorization": Secret("Bearer SECRET-ACCESS-TOKEN")}
 
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
-
-class Rig:
+class TransportRig:
     """A transport on a scripted httpx client, with injected clock, sleeper and random source."""
 
     def __init__(
@@ -46,11 +44,12 @@ class Rig:
         max_response_bytes: int = 1000,
         logger: logging.Logger | None = None,
         timeouts: Timeouts | None = None,
+        client_options: dict[str, Any] | None = None,
     ) -> None:
         self.flavor = flavor
         self.script = Script(*outcomes)
         self.sleeps: list[float] = []
-        self.http = flavor.mock_http(self.script)
+        self.http = flavor.mock_http(self.script, **(client_options or {}))
         clients = flavor.cls("transport", "HttpClients")(self.http, self.http, owned=owned)
         config = TransportConfig(
             graphql_url=URL,
@@ -62,7 +61,7 @@ class Rig:
             clients,
             config,
             logger=logger,
-            seams=flavor.cls("transport", "TransportSeams")(
+            seams=flavor.cls("seams", "TransportSeams")(
                 clock=lambda: NOW, sleeper=flavor.sleeper(self.sleeps), random=lambda: jitter
             ),
         )
@@ -77,21 +76,16 @@ class Rig:
 
 @pytest.fixture
 def rig(flavor: Flavor) -> Any:
-    rigs: list[Rig] = []
+    rigs: list[TransportRig] = []
 
-    def make(*outcomes: Any, **kwargs: Any) -> Rig:
-        made = Rig(flavor, *outcomes, **kwargs)
+    def make(*outcomes: Any, **kwargs: Any) -> TransportRig:
+        made = TransportRig(flavor, *outcomes, **kwargs)
         rigs.append(made)
         return made
 
     yield make
     for made in rigs:
         made.close()
-
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "flavor" in metafunc.fixturenames:
-        metafunc.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @pytest.mark.parametrize(
@@ -382,10 +376,10 @@ def test_an_injected_client_gets_one_notice_and_an_owned_one_none(
     flavor: Flavor, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.DEBUG, logger="whitemarket"):
-        injected = Rig(flavor, data(ok=1), owned=False)
+        injected = TransportRig(flavor, data(ok=1), owned=False)
         injected.post()
         injected.post()
-        owned = Rig(flavor, data(ok=1), owned=True)
+        owned = TransportRig(flavor, data(ok=1), owned=True)
         owned.post()
     notices = [r for r in caplog.records if "injected HTTP client" in r.getMessage()]
     injected.close()
@@ -415,8 +409,27 @@ def test_a_mutation_on_an_owned_client_goes_through_the_mutation_client_and_clos
     assert mutation_script.requests[0].headers["connection"] == "close"
 
 
+@pytest.mark.parametrize("kind", ["query", "mutation"])
+def test_an_injected_client_neither_follows_a_redirect_nor_applies_its_auth(
+    flavor: Flavor, kind: str
+) -> None:
+    r = TransportRig(
+        flavor,
+        reply(302, b"", {"Location": "https://other.test/graphql"}),
+        data(ok=1),
+        client_options={"follow_redirects": True, "auth": httpx.BasicAuth("user", "LEAK")},
+    )
+
+    with pytest.raises(HttpError):
+        r.post(kind)
+    r.close()
+
+    assert r.script.count == 1, "the redirect was not followed"
+    assert r.script.requests[0].headers["authorization"] == "Bearer SECRET-ACCESS-TOKEN"
+
+
 def test_an_injected_client_is_not_changed_and_not_closed(flavor: Flavor) -> None:
-    r = Rig(flavor, data(ok=1))
+    r = TransportRig(flavor, data(ok=1))
     clients = flavor.cls("transport", "HttpClients")(r.http, r.http, owned=False)
 
     flavor.run(clients.aclose() if flavor.is_async else clients.close())

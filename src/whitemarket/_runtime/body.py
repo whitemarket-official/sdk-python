@@ -17,6 +17,16 @@ _SLICE_BYTES: Final = 256  # compressed bytes handed to zlib at once
 _GZIP_WINDOW: Final = 16 + zlib.MAX_WBITS
 
 
+BodyBytes = bytes | bytearray  # a finished body: the buffer itself, so a large body is held once
+
+
+def body_pieces(body: BodyBytes, size: int = _STEP_BYTES) -> Iterator[bytes]:
+    """The body as `bytes` pieces of at most `size`, copied one at a time (never the whole)."""
+    with memoryview(body) as view:
+        for start in range(0, len(view), size):
+            yield bytes(view[start : start + size])
+
+
 class BodyError(Exception):
     """A body that cannot be used. The message names the problem, never the content."""
 
@@ -90,7 +100,7 @@ class BodyAccumulator:
         self._expected = expected_raw_bytes
         self._raw = 0
         self._inflater = zlib.decompressobj(_GZIP_WINDOW) if gzip else None
-        self._parts: list[bytes] = []
+        self._body = bytearray()
         self._size = 0
         self._done = False
         self._failed = False
@@ -102,7 +112,8 @@ class BodyAccumulator:
 
     def feed(self, chunk: bytes) -> None:
         """Take a raw chunk and keep its decoded bytes (`finish` returns them all)."""
-        self._parts.extend(self.decode(chunk))
+        for piece in self.decode(chunk):
+            self._body += piece
 
     def decode(self, chunk: bytes) -> Iterator[bytes]:
         """Take a raw chunk; yield its decoded bytes, one bounded step at a time.
@@ -120,8 +131,10 @@ class BodyAccumulator:
             return
         yield from self._inflate(chunk)
 
-    def finish(self) -> bytes:
+    def finish(self) -> BodyBytes:
         """The kept body; a gzip stream that stopped early or a short body is an error.
+
+        It is the buffer itself, not a copy: a large body is never held twice.
 
         (Unless truncating, where the body is a diagnostic excerpt and whatever arrived is it.)
         """
@@ -130,7 +143,7 @@ class BodyAccumulator:
                 raise BodyError("the gzip body ends before its end marker")
             if self._expected is not None and self._raw < self._expected:
                 raise BodyError("the response body is shorter than Content-Length")
-        return b"".join(self._parts)
+        return self._body
 
     def _count_raw(self, size: int) -> None:
         self._raw += size

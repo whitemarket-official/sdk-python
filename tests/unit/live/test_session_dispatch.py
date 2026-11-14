@@ -6,11 +6,11 @@ from typing import Any
 
 import pytest
 
-from support.live_fakes import Wait, make_rig
+from support.live_fakes import Wait, make_live_rig
 from support.live_servers import PRODUCT_CONTENT
 from whitemarket.errors.base import DecodeError, LiveConnectionError
 from whitemarket.live._connection import ServerClosedError
-from whitemarket.live.envelope import Publication, Reply, ReplyError, Unsubscribe
+from whitemarket.live._envelope import Publication, Reply, ReplyError, Unsubscribe
 from whitemarket.live.events import (
     DealExchanged,
     DealOffered,
@@ -33,7 +33,7 @@ PRODUCT = pub("market_products_updates", "market_product_added", PRODUCT_CONTENT
 
 
 async def test_poll_returns_the_event_after_its_handlers_ran_in_order() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     seen: list[str] = []
     rig.session.on(ProductAdded, lambda e: seen.append("on"))
     rig.session.subscribe_products(lambda e: seen.append("products"))
@@ -44,7 +44,7 @@ async def test_poll_returns_the_event_after_its_handlers_ran_in_order() -> None:
 
 
 async def test_channel_filters_products_by_name_and_personal_by_hash_prefix() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     products: list[Any] = []
     personal: list[Any] = []
     rig.session.subscribe_products(products.append)
@@ -59,7 +59,7 @@ async def test_channel_filters_products_by_name_and_personal_by_hash_prefix() ->
 
 
 async def test_personal_subscription_sends_no_subscribe_and_products_does() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     rig.session.subscribe_personal()
     rig.session.subscribe_products()
     await rig.session.connect()
@@ -69,7 +69,7 @@ async def test_personal_subscription_sends_no_subscribe_and_products_does() -> N
 
 
 async def test_unknown_type_is_unknown_event_and_malformed_known_type_also_reports_error() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     broken = dict(PRODUCT_CONTENT)
     del broken["price"]
     rig.connection.reads = [
@@ -93,14 +93,14 @@ async def test_unknown_type_is_unknown_event_and_malformed_known_type_also_repor
 async def test_a_decode_error_from_the_connection_goes_to_on_error_and_the_stream_continues() -> (
     None
 ):
-    rig = make_rig()
+    rig = make_live_rig()
     rig.connection.reads = [[DecodeError("not valid JSON", ("live",)), PRODUCT]]
     assert isinstance(await rig.session.poll(5), ProductAdded)
     assert [type(e) for k, e in rig.calls if k == "error"] == [DecodeError]
 
 
 async def test_a_handler_exception_propagates_and_the_connection_stays_open() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
 
     def boom(event: Any) -> None:
         raise RuntimeError("handler failed")
@@ -117,7 +117,7 @@ async def test_a_handler_exception_propagates_and_the_connection_stays_open() ->
 
 
 async def test_a_lifecycle_callback_exception_propagates_too() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
 
     def boom(reconnected: bool) -> None:
         raise RuntimeError("callback failed")
@@ -128,7 +128,7 @@ async def test_a_lifecycle_callback_exception_propagates_too() -> None:
 
 
 async def test_async_handlers_are_awaited() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     seen: list[Any] = []
 
     async def handler(event: Any) -> None:
@@ -142,20 +142,20 @@ async def test_async_handlers_are_awaited() -> None:
 
 
 async def test_poll_returns_none_after_the_timeout_and_the_clock_passed() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     assert await rig.session.poll(7.0) is None
     assert rig.clock.now == pytest.approx(1007.0)
 
 
 @pytest.mark.parametrize("bad", [-1.0, float("nan")], ids=["negative", "nan"])
 async def test_poll_refuses_a_bad_timeout(bad: float) -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     with pytest.raises(ValueError, match="timeout"):
         await rig.session.poll(bad)
 
 
 async def test_subscribe_while_connected_on_ws_subscribes_on_the_open_connection() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     await rig.session.connect()
     rig.session.subscribe_products()
     await rig.session.poll(1)
@@ -164,7 +164,7 @@ async def test_subscribe_while_connected_on_ws_subscribes_on_the_open_connection
 
 
 async def test_subscribe_while_connected_on_sse_reconnects_at_once_with_the_new_list() -> None:
-    rig = make_rig(can_subscribe=False)
+    rig = make_live_rig(can_subscribe=False)
     await rig.session.connect()
     rig.session.subscribe_products()
     await rig.session.poll(1)
@@ -173,7 +173,7 @@ async def test_subscribe_while_connected_on_sse_reconnects_at_once_with_the_new_
 
 
 async def test_105_already_subscribed_counts_as_success_and_other_errors_reach_on_error() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     rig.connection.reads = [
         [
             Reply(2, ReplyError(105, "already subscribed", False)),
@@ -187,7 +187,7 @@ async def test_105_already_subscribed_counts_as_success_and_other_errors_reach_o
 
 
 async def test_unsubscribe_push_from_2500_resubscribes_below_that_drops_the_channel() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     rig.session.subscribe_products()
     await rig.session.connect()
     rig.connection.reads = [[Unsubscribe("market_products_updates", 2500)]]
@@ -202,7 +202,7 @@ async def test_unsubscribe_push_from_2500_resubscribes_below_that_drops_the_chan
 async def test_a_server_asked_resubscribe_on_sse_is_a_counted_backoff_unless_up_60_seconds() -> (
     None
 ):
-    rig = make_rig(can_subscribe=False)
+    rig = make_live_rig(can_subscribe=False)
     rig.session.subscribe_products()
     rig.connection.reads = [
         [Unsubscribe("market_products_updates", 2600)],
@@ -217,7 +217,7 @@ async def test_a_server_asked_resubscribe_on_sse_is_a_counted_backoff_unless_up_
 
 
 async def test_close_closes_the_connection_once_and_is_idempotent() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     await rig.session.connect()
     await rig.session.close()
     await rig.session.close()
@@ -229,7 +229,7 @@ async def test_close_closes_the_connection_once_and_is_idempotent() -> None:
 
 
 async def test_close_from_a_handler_ends_poll_and_the_iterator() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
 
     async def closer(event: Any) -> None:
         await rig.session.close()
@@ -241,7 +241,7 @@ async def test_close_from_a_handler_ends_poll_and_the_iterator() -> None:
 
 
 async def test_close_from_another_task_wakes_a_blocked_poll() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     gate = asyncio.Event()
     rig.connection.block = gate
     await rig.session.connect()
@@ -253,7 +253,7 @@ async def test_close_from_another_task_wakes_a_blocked_poll() -> None:
 
 
 async def test_a_second_consumer_is_refused() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     gate = asyncio.Event()
     rig.connection.block = gate
     await rig.session.connect()
@@ -267,7 +267,7 @@ async def test_a_second_consumer_is_refused() -> None:
 
 
 async def test_run_dispatches_for_the_duration_then_returns() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     seen: list[Any] = []
     rig.session.on(ProductAdded, seen.append)
     rig.connection.reads = [[PRODUCT, PRODUCT]]
@@ -276,7 +276,7 @@ async def test_run_dispatches_for_the_duration_then_returns() -> None:
 
 
 async def test_wait_for_deal_event_returns_the_event_of_that_deal_and_dispatches_others() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     seen: list[Any] = []
     rig.session.on(DealOffered, seen.append)
     other = dict(DEAL, deal_id="d2")
@@ -294,13 +294,13 @@ async def test_wait_for_deal_event_returns_the_event_of_that_deal_and_dispatches
 
 
 async def test_wait_for_deal_event_times_out_with_none() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     assert await rig.session.wait_for_deal_event("d1", 3.0) is None
     assert rig.clock.now == pytest.approx(1003.0)
 
 
 async def test_the_token_never_reaches_the_lifecycle_callbacks_or_errors() -> None:
-    rig = make_rig()
+    rig = make_live_rig()
     rig.connection.reads = [[ServerClosedError(3000, "x")], []]
     await rig.session.poll(5)
     assert "jwt-" not in repr(rig.calls)

@@ -8,7 +8,8 @@ import pytest
 
 from support.exports import fixture
 from whitemarket.errors import DecodeError
-from whitemarket.exports import ExportFormat, ExportKind, ExportMeta, ExportWindow, parse_meta
+from whitemarket.exports import ExportFormat, ExportKind, ExportMeta, ExportWindow
+from whitemarket.exports.meta import parse_meta
 
 META: dict[str, Any] = {
     "file": "730.json",

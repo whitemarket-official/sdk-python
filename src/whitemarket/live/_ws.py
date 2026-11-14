@@ -10,24 +10,32 @@ multi-message frames and resubscribing on its own connection.
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final, Literal, cast
 
 from whitemarket._runtime.jwt import seconds_left
+from whitemarket._runtime.retry_after import parse_retry_after
 from whitemarket._runtime.secret import Secret
 from whitemarket._version import __version__
 from whitemarket.errors.base import TransportError
 from whitemarket.live._connection import (
+    QUEUE_SIZE,
     ConnectRejectedError,
     Incoming,
     ServerClosedError,
+    SlowConsumerError,
     StatusFailureError,
 )
-from whitemarket.live._policy import IDLE_GRACE_SECONDS, ConnectInfo
-from whitemarket.live.envelope import Publication, Unsubscribe, printable
-from whitemarket.retry import parse_retry_after
+from whitemarket.live._envelope import Publication, Unsubscribe, printable
+from whitemarket.live._policy import (
+    ALREADY_SUBSCRIBED_REPLY,
+    IDLE_GRACE_SECONDS,
+    RESUBSCRIBE_FROM,
+    ConnectInfo,
+    is_personal,
+)
 
 try:
     from centrifuge import (
@@ -49,9 +57,6 @@ except ImportError as error:
         "WebSocket live updates need the `live` extra: pip install 'whitemarket-sdk[live]'"
     ) from error
 
-# Publications waiting for the consumer. The library awaits our handler, so a full queue stops
-# it reading the socket (TCP backpressure) instead of growing memory.
-QUEUE_SIZE: Final = 4096
 # The library reports its own reasons as small codes: connecting 0 connect called, 1 transport
 # closed (any WebSocket close below 3000), 2 no ping, 3 subscribe timeout, 4 unsubscribe error;
 # disconnected 0 disconnect called, 1 unauthorized, 2 bad protocol, 3 message size limit.
@@ -60,7 +65,6 @@ _TRANSPORT_CLOSED: Final = 1
 _SERVER_ERROR_CODES: Final = range(100, 2000)
 _CENTRIFUGO_CODES_FROM: Final = 3000
 _CODE_OWN_UNSUBSCRIBE_MAX: Final = 2  # 0 unsubscribe called, 1 unauthorized, 2 client closed
-_ALREADY_SUBSCRIBED: Final = 105
 _SILENCED_LOGGERS: Final = ("centrifuge", "websockets.client")
 
 
@@ -105,54 +109,74 @@ class _Failed:
 _Item = Publication | Unsubscribe | _Connected | _Lost | _Failed
 
 
+class _Inbox:
+    """What the library's callbacks hand to the consumer. `put` never waits: the library reads
+    the socket into its own unbounded queue for as long as our callback is slow, so a callback
+    that blocked on a full queue would grow memory without limit. On overflow the consumer is
+    too slow: the flag is set, the connection is stopped and `read()` reports it."""
+
+    def __init__(self, on_overflow: Callable[[], Awaitable[None]]) -> None:
+        self.queue: asyncio.Queue[_Item] = asyncio.Queue(QUEUE_SIZE)
+        self.overflowed = False
+        self._on_overflow = on_overflow
+
+    async def put(self, item: _Item) -> None:
+        try:
+            self.queue.put_nowait(item)
+        except asyncio.QueueFull:
+            if not self.overflowed:
+                self.overflowed = True
+                await self._on_overflow()
+
+
 class _ClientEvents(ClientEventHandler):
     """Connection-level callbacks: everything goes to the queue, nothing is raised."""
 
-    def __init__(self, owner: "WsConnection", queue: "asyncio.Queue[_Item]") -> None:
+    def __init__(self, owner: "WsConnection", inbox: _Inbox) -> None:
         self._owner = owner
-        self._queue = queue
+        self._inbox = inbox
 
     async def on_connecting(self, ctx: ConnectingContext) -> None:
         # Code 0 is the initial `connect()`. Any later one is a lost connection the library would
         # reconnect by itself: stop it, the session decides.
         if ctx.code != 0:
-            await self._queue.put(_Lost(ctx.code, ctx.reason))
+            await self._inbox.put(_Lost(ctx.code, ctx.reason))
             await self._owner.stop_client()
 
     async def on_connected(self, ctx: ConnectedContext) -> None:
-        await self._queue.put(_Connected())
+        await self._inbox.put(_Connected())
 
     async def on_disconnected(self, ctx: DisconnectedContext) -> None:
         # Code 0 is our own `disconnect()`.
         if ctx.code != 0:
-            await self._queue.put(_Lost(ctx.code, ctx.reason))
+            await self._inbox.put(_Lost(ctx.code, ctx.reason))
 
     async def on_error(self, ctx: ErrorContext) -> None:
         # Before the connect reply an error ends the attempt (the library would retry). After
         # it every fatal problem is followed by a connecting/disconnected event.
         if not self._owner.connected:
-            await self._queue.put(_Failed(ctx.error))
+            await self._inbox.put(_Failed(ctx.error))
             await self._owner.stop_client()
 
     async def on_publication(self, ctx: ServerPublicationContext) -> None:
-        await self._queue.put(_publication(ctx.channel, ctx.pub.data))
+        await self._inbox.put(_publication(ctx.channel, ctx.pub.data))
 
 
 class _ChannelEvents(SubscriptionEventHandler):
     """Callbacks of one explicit subscription (`market_products_updates`)."""
 
-    def __init__(self, channel: str, queue: "asyncio.Queue[_Item]") -> None:
+    def __init__(self, channel: str, inbox: _Inbox) -> None:
         self._channel = channel
-        self._queue = queue
+        self._inbox = inbox
 
     async def on_publication(self, ctx: PublicationContext) -> None:
-        await self._queue.put(_publication(self._channel, ctx.pub.data))
+        await self._inbox.put(_publication(self._channel, ctx.pub.data))
 
     async def on_unsubscribed(self, ctx: UnsubscribedContext) -> None:
         # 0-2 are the client's own codes (our teardown); 105 "already subscribed" is a success
         # (SDK_SPEC 3.11). Anything else is the server refusing or ending the subscription.
-        if ctx.code > _CODE_OWN_UNSUBSCRIBE_MAX and ctx.code != _ALREADY_SUBSCRIBED:
-            await self._queue.put(Unsubscribe(self._channel, ctx.code))
+        if ctx.code > _CODE_OWN_UNSUBSCRIBE_MAX and ctx.code != ALREADY_SUBSCRIBED_REPLY:
+            await self._inbox.put(Unsubscribe(self._channel, ctx.code))
 
 
 def _publication(channel: str, data: Any) -> Publication:
@@ -179,23 +203,20 @@ class WsConnection:
         self._idle_grace = idle_grace
         self._now = clock or (lambda: datetime.now(UTC))
         self._client: Client | None = None
-        self._queue: asyncio.Queue[_Item] = asyncio.Queue(QUEUE_SIZE)
+        self._inbox = _Inbox(self.stop_client)
         self.connected = False
-        self.closing = False
         self._subscriptions: dict[str, Any] = {}
 
     async def open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         await self.close()
         _silence_library_debug()
-        self.closing = False
         self.connected = False
-        queue: asyncio.Queue[_Item] = asyncio.Queue(QUEUE_SIZE)
-        self._queue = queue
-        secret = token.reveal()
+        inbox = _Inbox(self.stop_client)
+        self._inbox = inbox
         client = Client(
             self._url,
-            events=_ClientEvents(self, queue),
-            token=secret,
+            events=_ClientEvents(self, inbox),
+            token=token.reveal(),
             name="whitemarket-sdk-python",
             version=__version__,
             timeout=seconds,
@@ -205,22 +226,22 @@ class WsConnection:
         )
         self._client = client
         for channel in channels:
-            if channel.startswith("#"):
+            if is_personal(channel):
                 continue  # personal channels are server-side subscriptions: never subscribed
-            sub = client.new_subscription(channel, _ChannelEvents(channel, queue))
+            sub = client.new_subscription(channel, _ChannelEvents(channel, inbox))
             self._subscriptions[channel] = sub
             await sub.subscribe()
         await client.connect()
         try:
             async with asyncio.timeout(seconds):
-                await self._until_connected(queue)
+                await self._until_connected(inbox.queue)
         except TimeoutError:
             await self.close()
             raise TransportError("the live connection sent no connect reply in time") from None
         except BaseException:
             await self.close()
             raise
-        left = seconds_left(secret, self._now())
+        left = seconds_left(token.reveal(), self._now())
         return ConnectInfo(ping=None, pong=True, ttl=left)
 
     async def _until_connected(self, queue: "asyncio.Queue[_Item]") -> None:
@@ -238,11 +259,15 @@ class WsConnection:
             raise _failure(item, connected=False)
 
     async def read(self, seconds: float | None) -> Incoming | None:
+        if self._inbox.overflowed:
+            raise SlowConsumerError("the live consumer is too slow")
         try:
-            item = await asyncio.wait_for(self._queue.get(), seconds)
+            item = await asyncio.wait_for(self._inbox.queue.get(), seconds)
         except TimeoutError:
             return None
         if isinstance(item, Publication | Unsubscribe):
+            if isinstance(item, Unsubscribe) and item.code < RESUBSCRIBE_FROM:
+                self._forget(item.channel)  # a later `subscribe()` must make a new subscription
             return item
         if isinstance(item, _Connected):
             return None
@@ -252,11 +277,18 @@ class WsConnection:
         client = self._client
         if client is None or not self.connected:
             raise TransportError("the live connection is not open")
-        if channel.startswith("#") or channel in self._subscriptions:
+        if is_personal(channel) or channel in self._subscriptions:
             return
-        sub = client.new_subscription(channel, _ChannelEvents(channel, self._queue))
+        sub = client.new_subscription(channel, _ChannelEvents(channel, self._inbox))
         self._subscriptions[channel] = sub
         await sub.subscribe()
+
+    def _forget(self, channel: str) -> None:
+        sub = self._subscriptions.pop(channel, None)
+        client = self._client
+        if sub is not None and client is not None:
+            with contextlib.suppress(Exception):  # still subscribed: the library refuses
+                client.remove_subscription(sub)
 
     async def stop_client(self) -> None:
         """Stop the library's own reconnect (called from its event handlers)."""
@@ -266,7 +298,6 @@ class WsConnection:
 
     async def close(self) -> None:
         client, self._client = self._client, None
-        self.closing = True
         self.connected = False
         self._subscriptions.clear()
         if client is None:
@@ -280,11 +311,11 @@ class WsConnection:
             pending = {t for t in getattr(client, "_background_tasks", ()) if not t.done()}
             if not pending:
                 break
-            while not self._queue.empty():
-                self._queue.get_nowait()
+            while not self._inbox.queue.empty():
+                self._inbox.queue.get_nowait()
             await asyncio.wait(pending, timeout=0.1)
         with contextlib.suppress(asyncio.QueueFull):
-            self._queue.put_nowait(_Lost(0, ""))  # wakes a reader blocked in `read`
+            self._inbox.queue.put_nowait(_Lost(0, ""))  # wakes a reader blocked in `read`
 
 
 def _failure(item: _Item, *, connected: bool) -> Exception:

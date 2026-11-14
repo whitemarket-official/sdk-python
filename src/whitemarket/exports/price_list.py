@@ -1,12 +1,10 @@
 """`PriceList`: the prices file in memory, keyed by `(market_hash_name, paint_index)` (SDK_SPEC
 3.10)."""
 
-from collections.abc import AsyncIterable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from typing import Final
 
-from whitemarket.exports.kinds import ExportFormat
 from whitemarket.exports.rows import PriceRow
-from whitemarket.exports.stream import aiter_price_rows, iter_price_rows
 
 _NOT_APPLICABLE: Final = "0"
 
@@ -32,20 +30,6 @@ class PriceList:
         self._by_name: dict[str, tuple[PriceRow, ...]] = {
             name: tuple(group) for name, group in by_name.items()
         }
-
-    @classmethod
-    def from_chunks(
-        cls, chunks: Iterable[bytes], format: ExportFormat = ExportFormat.JSON
-    ) -> "PriceList":
-        """Decode a whole prices file from its body chunks."""
-        return cls(iter_price_rows(chunks, format))
-
-    @classmethod
-    async def afrom_chunks(
-        cls, chunks: AsyncIterable[bytes], format: ExportFormat = ExportFormat.JSON
-    ) -> "PriceList":
-        """Decode a whole prices file from an async stream of body chunks."""
-        return cls([row async for row in aiter_price_rows(chunks, format)])
 
     def get(self, market_hash_name: str, paint_index: str = _NOT_APPLICABLE) -> PriceRow | None:
         """The row of one item and paint index (`"0"` for items without one), or None."""

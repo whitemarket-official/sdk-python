@@ -18,16 +18,24 @@ from urllib.parse import quote
 import httpx
 
 from whitemarket._runtime.log_redaction import redact_url
+from whitemarket._runtime.retry_after import parse_retry_after
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import DecodeError, TransportError
-from whitemarket.live._connection import Incoming, ServerClosedError, StatusFailureError
-from whitemarket.live._policy import ConnectInfo
-from whitemarket.live.envelope import ConnectReply, Disconnect, decode_message
+from whitemarket.live._connection import (
+    QUEUE_SIZE,
+    Incoming,
+    ServerClosedError,
+    StatusFailureError,
+)
+from whitemarket.live._envelope import ConnectReply, Disconnect, decode_message
+from whitemarket.live._policy import ConnectInfo, is_personal
+from whitemarket.live._sse_parser import SseParser
 from whitemarket.live.options import LiveOptions
-from whitemarket.live.sse_parser import SseParser
-from whitemarket.retry import parse_retry_after
 
-QUEUE_SIZE: Final = 4096
+# The pump stops reading (TCP backpressure) when this many events wait for the consumer. The count
+# is lowered so that events x `max_message_bytes` stays within BUFFER_BYTES.
+BUFFER_BYTES: Final = 64 * 1024 * 1024
+MIN_QUEUE_SIZE: Final = 2
 _HTTP_OK: Final = range(200, 300)
 
 
@@ -73,7 +81,11 @@ class SseConnection:
         self._client: httpx.AsyncClient | None = None
         self._response: httpx.Response | None = None
         self._pump: asyncio.Task[None] | None = None
-        self._queue: asyncio.Queue[str | _Ended] = asyncio.Queue(QUEUE_SIZE)
+        self._queue: asyncio.Queue[str | _Ended] = asyncio.Queue(self._queue_size())
+
+    def _queue_size(self) -> int:
+        by_bytes = BUFFER_BYTES // self._options.max_message_bytes
+        return max(MIN_QUEUE_SIZE, min(QUEUE_SIZE, by_bytes))
 
     async def open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         await self.close()
@@ -90,10 +102,8 @@ class SseConnection:
 
     async def _open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         subs: dict[str, dict[str, str]] = {
-            channel: {} for channel in channels if not channel.startswith("#")
+            channel: {} for channel in channels if not is_personal(channel)
         }
-        connect = json.dumps({"token": token.reveal(), "subs": subs}, separators=(",", ":"))
-        url = f"{self._url}?cf_connect={quote(connect, safe='')}"
         client = httpx.AsyncClient(
             follow_redirects=False,
             trust_env=self._trust_env,
@@ -105,7 +115,7 @@ class SseConnection:
             "Accept-Encoding": "identity",
             "User-Agent": self._user_agent,
         }
-        result = await _send(client, url, headers)
+        result = await _send(client, _connect_url(self._url, token, subs), headers)
         if isinstance(result, str):
             # Raised outside any `except` block: an httpx error holds the request, whose URL holds
             # the token, and a raise inside one would keep it as `__context__`.
@@ -120,7 +130,7 @@ class SseConnection:
             raise TransportError(
                 "the live stream has a content encoding although none was accepted"
             )
-        queue: asyncio.Queue[str | _Ended] = asyncio.Queue(QUEUE_SIZE)
+        queue: asyncio.Queue[str | _Ended] = asyncio.Queue(self._queue_size())
         self._queue = queue
         self._pump = asyncio.create_task(
             _pump(response, SseParser(self._options.max_message_bytes), queue)
@@ -165,13 +175,19 @@ class SseConnection:
                 await client.aclose()
 
 
+def _connect_url(base: str, token: Secret, subs: dict[str, dict[str, str]]) -> str:
+    """The stream URL with the connect command; built inline so no frame that can raise keeps it."""
+    connect = json.dumps({"token": token.reveal(), "subs": subs}, separators=(",", ":"))
+    return f"{base}?cf_connect={quote(connect, safe='')}"
+
+
 async def _send(
     client: httpx.AsyncClient, url: str, headers: dict[str, str]
 ) -> httpx.Response | str:
     """The streaming response, or the name of the httpx error class (never the error itself)."""
     try:
         request = client.build_request("GET", url, headers=headers)
-        return await client.send(request, stream=True, follow_redirects=False)
+        return await client.send(request, stream=True, follow_redirects=False, auth=None)
     except httpx.HTTPError as error:
         return type(error).__name__
 

@@ -11,8 +11,8 @@ from support.live_servers import FakeSseServer, SseScript, connect_reply, pub_me
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import DecodeError, TransportError
 from whitemarket.live._connection import StatusFailureError
+from whitemarket.live._envelope import Ping, Publication
 from whitemarket.live._sse import SseConnection
-from whitemarket.live.envelope import Ping, Publication
 from whitemarket.live.options import LiveOptions
 
 TOKEN = jwt(exp=4_000_000_000, sub="synthetic-user")
@@ -217,3 +217,15 @@ async def test_a_failed_request_error_does_not_chain_the_httpx_error_that_holds_
     assert caught.value.__context__ is None
     assert caught.value.__cause__ is None
     assert TOKEN not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("max_message_bytes", "expected"),
+    [(1024, 4096), (1_048_576, 64), (64 * 1024 * 1024, 2)],
+    ids=["small-messages-count-cap", "default-1MiB", "huge-messages-floor"],
+)
+def test_the_event_queue_is_bounded_by_bytes(max_message_bytes: int, expected: int) -> None:
+    connection = SseConnection(
+        "http://localhost/sse", "ua", LiveOptions(max_message_bytes=max_message_bytes)
+    )
+    assert connection._queue.maxsize == expected

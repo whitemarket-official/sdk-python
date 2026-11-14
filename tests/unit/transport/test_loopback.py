@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from support.flavors import FLAVORS, Flavor
+from support.flavors import Flavor
 from support.loopback import HttpServer, RawServer, Seen, send
 from whitemarket import RetryPolicy, Timeouts
 from whitemarket._runtime import endpoints
@@ -27,11 +27,6 @@ LIFETIME = json.dumps({"data": {"market_lifetime_all": True}}).encode()
 EXCHANGE = json.dumps(
     {"data": {"auth_token": {"accessToken": ACCESS, "isNewPerson": False}}}
 ).encode()
-
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "flavor" in metafunc.fixturenames:
-        metafunc.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @pytest.fixture(autouse=True)
@@ -119,10 +114,10 @@ def test_the_default_client_never_follows_a_redirect(
 
 
 @pytest.mark.parametrize("operation", ["query", "mutation", "auth_token"])
-def test_control_a_client_that_follows_redirects_does_reach_the_other_host_with_the_partner_token(
+def test_an_injected_client_that_follows_redirects_still_does_not_reach_the_other_host(
     flavor: Flavor, operation: str
 ) -> None:
-    """Proves the test above can see a leak: with `follow_redirects=True` the header travels."""
+    """The SDK sends every request with `follow_redirects=False`, whatever the client is set to."""
     with HttpServer(answer) as target:
         with HttpServer(
             lambda h, _: send(h, 307, b"", Location=f"{target.url}/graphql/partner")
@@ -141,20 +136,17 @@ def test_control_a_client_that_follows_redirects_does_reach_the_other_host_with_
                 def run(result: Any, runner: Any = runner) -> Any:
                     return runner.run(result) if runner else result
 
-                if operation == "auth_token":
-                    run(client.auth.access_token())
-                elif operation == "query":
-                    run(client.generated.test_ping())
-                else:
-                    run(client.generated.market_lifetime_all(value=600))
+                calls = {
+                    "auth_token": client.auth.access_token,
+                    "query": client.generated.test_ping,
+                    "mutation": lambda: client.generated.market_lifetime_all(value=600),
+                }
+                with pytest.raises(HttpError) as caught:
+                    run(calls[operation]())
                 run(http.aclose()) if runner else http.close()
 
-        (leaked,) = target.record.requests
-        if operation == "auth_token":
-            assert leaked.headers["x-partner-token"] == PARTNER
-        else:
-            # httpx drops `Authorization` across origins; the request itself arrived.
-            assert b"test_ping" in leaked.body or b"market_lifetime_all" in leaked.body
+            assert caught.value.status == 307
+        assert target.record.requests == [], "the second host received nothing"
 
 
 # ---- connections and resends ---------------------------------------------------------------------

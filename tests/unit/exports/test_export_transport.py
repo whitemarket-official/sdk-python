@@ -19,8 +19,8 @@ from support.export_rig import (
     gz,
     ok,
 )
-from support.exports import PRICE_ROW, json_body
-from support.flavors import FLAVORS, Flavor
+from support.exports import PRICES_BODY
+from support.flavors import Flavor, each_flavor
 from support.http import Chunks, reply
 from whitemarket import NotModified, RetryPolicy
 from whitemarket.errors import (
@@ -34,24 +34,7 @@ from whitemarket.errors import (
 )
 from whitemarket.exports import ExportFormat, ExportKind, ExportValidators
 
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
-
-PRICES = json_body([PRICE_ROW])
 RETRY_AFTER = {"Retry-After": "7"}
-
-
-@pytest.fixture
-def rigs() -> Any:
-    made: list[Rig] = []
-
-    def make(flavor: Flavor, *outcomes: Any, **kwargs: Any) -> Rig:
-        rig = Rig(flavor, *outcomes, **kwargs)
-        made.append(rig)
-        return rig
-
-    yield make
-    for rig in made:
-        rig.close()
 
 
 # --- statuses and retries --------------------------------------------------------------------
@@ -118,7 +101,7 @@ def test_a_retry_after_header_is_kept_on_the_error(flavor: Flavor, rigs: Any) ->
 
 @each_flavor
 def test_a_retry_that_succeeds_returns_the_file(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, reply(503), reply(500), ok(PRICES))
+    rig = rigs(flavor, reply(503), reply(500), ok(PRICES_BODY))
 
     assert len(rig.prices()) == 1
     assert (len(rig.requests), rig.sleeps) == (3, RETRY_WAITS)
@@ -176,7 +159,7 @@ def test_a_network_error_is_retried_then_a_transport_error_without_a_cause(
 
 @each_flavor
 def test_a_network_error_that_clears_is_retried_into_success(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, network_error, ok(PRICES))
+    rig = rigs(flavor, network_error, ok(PRICES_BODY))
 
     assert len(rig.prices()) == 1
 
@@ -322,7 +305,7 @@ def test_an_undecodable_or_incomplete_body_is_a_transport_error(
 def test_content_length_must_match_the_raw_bytes(
     flavor: Flavor, rigs: Any, compressed: bool, announce: Callable[[int], str], good: bool
 ) -> None:
-    raw = gz(PRICES) if compressed else PRICES
+    raw = gz(PRICES_BODY) if compressed else PRICES_BODY
     headers = {"Content-Length": announce(len(raw)), **(GZIP if compressed else {})}
     # A scripted body is not checked by httpx itself, so the SDK's own check is what is tested.
     rig = rigs(flavor, stream_of(raw[:10], raw[10:], headers=headers))
@@ -336,7 +319,7 @@ def test_content_length_must_match_the_raw_bytes(
 
 @each_flavor
 def test_a_response_without_content_length_is_not_checked(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, stream_of(PRICES[:5], PRICES[5:]))
+    rig = rigs(flavor, stream_of(PRICES_BODY[:5], PRICES_BODY[5:]))
 
     assert len(rig.prices()) == 1
 
@@ -362,7 +345,7 @@ def redirect(location: str, status: int = 302) -> Any:
 def test_a_redirect_to_the_same_host_and_port_over_https_is_followed(
     flavor: Flavor, rigs: Any, status: int, location: str
 ) -> None:
-    rig = rigs(flavor, redirect(location, status), ok(PRICES))
+    rig = rigs(flavor, redirect(location, status), ok(PRICES_BODY))
 
     assert len(rig.prices()) == 1
     assert [r.url.host for r in rig.requests] == ["export.test", "export.test"]
@@ -371,11 +354,13 @@ def test_a_redirect_to_the_same_host_and_port_over_https_is_followed(
 
 @each_flavor
 def test_three_redirects_are_followed_and_a_fourth_is_not(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, redirect("/a"), redirect("/b"), redirect("/c"), ok(PRICES))
+    rig = rigs(flavor, redirect("/a"), redirect("/b"), redirect("/c"), ok(PRICES_BODY))
     assert len(rig.prices()) == 1
     assert len(rig.requests) == 4
 
-    rig = rigs(flavor, redirect("/a"), redirect("/b"), redirect("/c"), redirect("/d"), ok(PRICES))
+    rig = rigs(
+        flavor, redirect("/a"), redirect("/b"), redirect("/c"), redirect("/d"), ok(PRICES_BODY)
+    )
     with pytest.raises(TransportError, match="more than 3 times") as caught:
         rig.prices()
 
@@ -406,7 +391,7 @@ REFUSED = [
 def test_any_other_redirect_is_a_transport_error_and_nothing_is_sent_there(
     flavor: Flavor, rigs: Any, location: str, reason: str
 ) -> None:
-    rig = rigs(flavor, redirect(location), ok(PRICES))
+    rig = rigs(flavor, redirect(location), ok(PRICES_BODY))
 
     with pytest.raises(TransportError, match=reason) as caught:
         rig.prices()
@@ -416,9 +401,42 @@ def test_any_other_redirect_is_a_transport_error_and_nothing_is_sent_there(
     assert location not in str(caught.value)  # server input is not echoed
 
 
+INJECTED_CLIENT_OPTIONS = [
+    pytest.param({"follow_redirects": True}, id="client that follows redirects"),
+    pytest.param(
+        {
+            "headers": {"Authorization": "Bearer LEAK", "X-Partner-Token": "LEAK"},
+            "cookies": {"session": "LEAK"},
+            "auth": httpx.BasicAuth("user", "LEAK"),
+        },
+        id="client with default credentials",
+    ),
+]
+
+
+@each_flavor
+@pytest.mark.parametrize("options", INJECTED_CLIENT_OPTIONS)
+def test_an_injected_client_neither_follows_a_redirect_nor_sends_its_credentials(
+    flavor: Flavor, rigs: Any, options: dict[str, Any]
+) -> None:
+    rig = rigs(
+        flavor,
+        redirect("https://other.test/v1/x"),
+        ok(PRICES_BODY),
+        client_options={"follow_redirects": True, **options},
+    )
+
+    with pytest.raises(TransportError, match="another host"):
+        rig.prices()
+
+    assert [r.url.host for r in rig.requests] == ["export.test"], "the redirect was not followed"
+    sent = rig.requests[0].headers
+    assert not {"authorization", "x-partner-token", "cookie"} & set(sent.keys())
+
+
 @each_flavor
 def test_a_redirect_on_a_custom_port_stays_on_that_port(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, redirect("/v1/x"), ok(PRICES), base_url="https://export.test:8443")
+    rig = rigs(flavor, redirect("/v1/x"), ok(PRICES_BODY), base_url="https://export.test:8443")
 
     rig.prices()
 
@@ -427,7 +445,7 @@ def test_a_redirect_on_a_custom_port_stays_on_that_port(flavor: Flavor, rigs: An
 
 @each_flavor
 def test_the_redirect_target_gets_the_same_headers(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, redirect("/v1/x"), ok(PRICES))
+    rig = rigs(flavor, redirect("/v1/x"), ok(PRICES_BODY))
 
     rig.prices()
 
@@ -445,7 +463,7 @@ def make_cache() -> Callable[[Flavor], Any]:
 
 @each_flavor
 def test_a_conditional_call_without_a_cache_is_an_argument_error(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     with pytest.raises(ValueError, match="needs a cache"):
         rig.prices(conditional=True)
@@ -460,7 +478,7 @@ def test_the_validators_of_a_parsed_200_are_stored_and_sent_next_time(
     cache = make_cache(flavor)
     rig = rigs(
         flavor,
-        ok(PRICES, ETag='"abc"', **{"Last-Modified": "Fri, 06 Nov 2026 11:00:00 GMT"}),
+        ok(PRICES_BODY, ETag='"abc"', **{"Last-Modified": "Fri, 06 Nov 2026 11:00:00 GMT"}),
         reply(304),
         cache=cache,
     )
@@ -480,13 +498,33 @@ def test_the_validators_of_a_parsed_200_are_stored_and_sent_next_time(
 def test_only_the_validators_the_server_sent_are_sent_back(
     flavor: Flavor, rigs: Any, make_cache: Any
 ) -> None:
-    rig = rigs(flavor, ok(PRICES, ETag='"abc"'), reply(304), cache=make_cache(flavor))
+    rig = rigs(flavor, ok(PRICES_BODY, ETag='"abc"'), reply(304), cache=make_cache(flavor))
 
     rig.prices(conditional=True)
     rig.prices(conditional=True)
 
     assert rig.requests[1].headers["if-none-match"] == '"abc"'
     assert "if-modified-since" not in rig.requests[1].headers
+
+
+@each_flavor
+def test_a_later_200_without_validators_forgets_the_old_ones(
+    flavor: Flavor, rigs: Any, make_cache: Any
+) -> None:
+    rig = rigs(
+        flavor,
+        ok(PRICES_BODY, ETag='"abc"'),
+        ok(PRICES_BODY),
+        ok(PRICES_BODY),
+        cache=make_cache(flavor),
+    )
+
+    rig.prices(conditional=True)
+    rig.prices(conditional=True)  # sends "abc"; the 200 answer carries no validator
+    rig.prices(conditional=True)
+
+    assert rig.requests[1].headers["if-none-match"] == '"abc"'
+    assert "if-none-match" not in rig.requests[2].headers
 
 
 @each_flavor
@@ -506,7 +544,7 @@ def test_validators_of_a_body_that_failed_to_parse_are_not_stored(
     flavor: Flavor, rigs: Any, make_cache: Any
 ) -> None:
     cache = make_cache(flavor)
-    rig = rigs(flavor, ok(b"not json", ETag='"bad"'), ok(PRICES), cache=cache)
+    rig = rigs(flavor, ok(b"not json", ETag='"bad"'), ok(PRICES_BODY), cache=cache)
 
     with pytest.raises(DecodeError, match="prices"):
         rig.prices(conditional=True)
@@ -520,7 +558,7 @@ def test_validators_of_a_body_that_failed_to_parse_are_not_stored(
 @each_flavor
 def test_a_plain_call_never_touches_the_cache(flavor: Flavor, rigs: Any, make_cache: Any) -> None:
     cache = make_cache(flavor)
-    rig = rigs(flavor, ok(PRICES, ETag='"abc"'), cache=cache)
+    rig = rigs(flavor, ok(PRICES_BODY, ETag='"abc"'), cache=cache)
 
     rig.prices()
 
@@ -532,7 +570,7 @@ def test_a_body_without_validators_stores_nothing(
     flavor: Flavor, rigs: Any, make_cache: Any
 ) -> None:
     cache = make_cache(flavor)
-    rig = rigs(flavor, ok(PRICES), cache=cache)
+    rig = rigs(flavor, ok(PRICES_BODY), cache=cache)
 
     rig.prices(conditional=True)
 
@@ -558,7 +596,7 @@ def test_an_unusable_cache_entry_is_ignored(
     flavor: Flavor, rigs: Any, make_cache: Any, entry: Any
 ) -> None:
     cache = make_cache(flavor)
-    rig = rigs(flavor, ok(PRICES), cache=cache)
+    rig = rigs(flavor, ok(PRICES_BODY), cache=cache)
     rig.run(cache.set(PRICES_URL, entry))
 
     assert len(rig.prices(conditional=True)) == 1
@@ -588,7 +626,7 @@ def test_a_cache_that_fails_is_not_an_export_failure(
 ) -> None:
     rig = rigs(
         flavor,
-        ok(PRICES, ETag='"abc"'),
+        ok(PRICES_BODY, ETag='"abc"'),
         cache=AsyncBrokenCache() if flavor.is_async else SyncBrokenCache(),
     )
 

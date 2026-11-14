@@ -21,10 +21,11 @@ from whitemarket.errors.base import TransportError
 from whitemarket.live._connection import (
     ConnectRejectedError,
     ServerClosedError,
+    SlowConsumerError,
     StatusFailureError,
 )
+from whitemarket.live._envelope import Publication, Unsubscribe
 from whitemarket.live._ws import WsConnection
-from whitemarket.live.envelope import Publication, Unsubscribe
 
 TOKEN = jwt(exp=4_000_000_000, sub="synthetic-user")
 PRODUCTS = "market_products_updates"
@@ -310,6 +311,48 @@ async def test_an_unsubscribe_push_below_2500_is_reported_and_from_2500_resubscr
     assert [
         c["subscribe"]["channel"] for c in server.connections[0].commands if "subscribe" in c
     ] == [PRODUCTS, PRODUCTS]
+
+
+async def test_a_channel_the_server_unsubscribed_can_be_subscribed_again() -> None:
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect()
+        await c.accept_subscribes(1)
+        await c.send(push({"channel": PRODUCTS, "unsubscribe": {"code": 2400, "reason": "no"}}))
+        await c.accept_subscribes(1)
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server)
+        await conn.open(Secret(TOKEN), [PRODUCTS], 5.0)
+        assert await conn.read(3.0) == Unsubscribe(PRODUCTS, 2400)
+        await conn.subscribe(PRODUCTS)
+        await asyncio.sleep(0.3)
+        await conn.close()
+    assert [
+        c["subscribe"]["channel"] for c in server.connections[0].commands if "subscribe" in c
+    ] == [PRODUCTS, PRODUCTS]
+
+
+async def test_a_flood_with_a_consumer_that_does_not_read_stays_bounded_and_drops_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("whitemarket.live._ws.QUEUE_SIZE", 8)
+    frame = push(pub_message("#42", "market_deal_offered", {"deal_id": "d"}))
+
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect()
+        for _ in range(500):
+            await c.send(frame)
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server)
+        await conn.open(Secret(TOKEN), [], 5.0)
+        await asyncio.sleep(1.0)  # the consumer does not read
+        assert conn._inbox.queue.qsize() <= 8
+        with pytest.raises(SlowConsumerError):
+            await conn.read(1.0)
+        await conn.close()
 
 
 async def test_close_stops_every_task_and_closes_the_socket() -> None:

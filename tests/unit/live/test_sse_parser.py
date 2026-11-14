@@ -3,7 +3,7 @@
 import pytest
 
 from whitemarket.errors.base import TransportError
-from whitemarket.live.sse_parser import SseParser
+from whitemarket.live._sse_parser import SseParser
 
 
 def drain(parser: SseParser) -> list[str]:

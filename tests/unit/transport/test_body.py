@@ -67,7 +67,30 @@ def test_a_bomb_is_cut_without_inflating_it_whole() -> None:
 
     assert peak < 5_000_000, "the 50 MB body was never inflated in one step"
 
-    assert sum(map(len, accumulator._parts)) <= 1000
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["identity", "gzip"])
+def test_finishing_a_large_body_does_not_hold_it_twice(gzipped: bool) -> None:
+    size = 24 * 1024 * 1024
+    piece = bytes(range(256)) * 4096  # 1 MiB
+    raw = gzip.compress(piece * (size // len(piece))) if gzipped else None
+    chunks = (
+        [raw[i : i + 65536] for i in range(0, len(raw), 65536)]
+        if raw is not None
+        else [piece] * (size // len(piece))
+    )
+    accumulator = BodyAccumulator(limit=size, gzip=gzipped)
+    tracemalloc.start()
+    try:
+        for chunk in chunks:
+            accumulator.feed(chunk)
+        result = accumulator.finish()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert len(result) == size
+    held = sum(map(len, chunks)) if not gzipped else len(raw or b"")
+    assert peak - held <= size * 1.2, "the body is held about once, not parts plus a joined copy"
 
 
 @pytest.mark.parametrize(

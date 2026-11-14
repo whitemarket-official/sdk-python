@@ -4,16 +4,8 @@ from collections.abc import Sequence
 from typing import Final, Protocol
 
 from whitemarket._runtime.secret import Secret
-from whitemarket.errors.http import (
-    AuthenticationError,
-    BadRequestError,
-    HttpError,
-    RateLimitError,
-    ServerError,
-    ServiceUnavailableError,
-)
-from whitemarket.live._policy import ConnectInfo
-from whitemarket.live.envelope import (
+from whitemarket.errors.base import TransportError
+from whitemarket.live._envelope import (
     ConnectReply,
     Disconnect,
     OtherMessage,
@@ -22,12 +14,11 @@ from whitemarket.live.envelope import (
     Reply,
     Unsubscribe,
 )
+from whitemarket.live._policy import ConnectInfo
+from whitemarket.live.options import LiveOptions, LiveTransport
 
-HTTP_BAD_REQUEST: Final = 400
-HTTP_UNAUTHORIZED: Final = 401
-HTTP_TOO_MANY_REQUESTS: Final = 429
-HTTP_UNAVAILABLE: Final = 503
-HTTP_SERVER_ERRORS: Final = range(500, 600)
+# Messages a connection may buffer for a consumer that does not read.
+QUEUE_SIZE: Final = 4096
 
 Incoming = Publication | Disconnect | Unsubscribe | Reply | Ping | ConnectReply | OtherMessage
 
@@ -39,6 +30,11 @@ class ServerClosedError(Exception):
         super().__init__(f"closed with code {code}")
         self.code = code
         self.reason = reason
+
+
+class SlowConsumerError(TransportError):
+    """The consumer did not keep up and the connection buffer overflowed: the connection was
+    dropped, messages are lost (resync through GraphQL)."""
 
 
 class ConnectRejectedError(Exception):
@@ -57,21 +53,6 @@ class StatusFailureError(Exception):
         super().__init__(f"HTTP {status}")
         self.status = status
         self.retry_after = retry_after
-
-
-def http_error(status: int, retry_after: float | None = None) -> HttpError:
-    """The SDK's error class of a status, for a terminal failure (no body is kept)."""
-    if status == HTTP_UNAUTHORIZED:
-        return AuthenticationError()
-    if status == HTTP_TOO_MANY_REQUESTS:
-        return RateLimitError(retry_after=retry_after)
-    if status == HTTP_UNAVAILABLE:
-        return ServiceUnavailableError(retry_after=retry_after)
-    if status == HTTP_BAD_REQUEST:
-        return BadRequestError()
-    if status in HTTP_SERVER_ERRORS:
-        return ServerError(status=status)
-    return HttpError(status)
 
 
 class Connection(Protocol):
@@ -93,3 +74,23 @@ class Connection(Protocol):
     async def subscribe(self, channel: str) -> None: ...
 
     async def close(self) -> None: ...
+
+
+def build_connection(
+    transport: LiveTransport,
+    *,
+    ws_url: str,
+    sse_url: str,
+    user_agent: str,
+    options: LiveOptions,
+) -> Connection:
+    """The connection of a transport; the WebSocket one needs the `live` extra."""
+    # Imported here: `_ws` needs the optional `live` extra (SSE does not), and both import this
+    # module.
+    if transport is LiveTransport.SSE:
+        from whitemarket.live._sse import SseConnection  # noqa: PLC0415 - import cycle with _sse, see #0
+
+        return SseConnection(sse_url, user_agent, options)
+    from whitemarket.live._ws import WsConnection  # noqa: PLC0415 - optional live extra and import cycle, see #0
+
+    return WsConnection(ws_url, user_agent)

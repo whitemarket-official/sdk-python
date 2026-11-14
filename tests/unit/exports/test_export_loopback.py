@@ -16,17 +16,13 @@ from typing import Any
 import pytest
 
 from support.export_rig import gz
-from support.exports import PRICE_ROW, PRODUCT_ROW, json_body
-from support.flavors import FLAVORS, Flavor
+from support.exports import PRICE_ROW, PRICES_BODY, PRODUCT_ROW, json_body
+from support.flavors import Flavor, each_flavor
 from support.loopback import HttpServer, RawServer, Seen, send
 from whitemarket import RetryPolicy
 from whitemarket._runtime import endpoints
 from whitemarket.errors import HttpError, TransportError
 from whitemarket.exports import ExportOptions
-
-PRICES = json_body([PRICE_ROW])
-
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +76,7 @@ def test_a_redirect_to_another_port_is_refused_and_that_server_receives_nothing(
     flavor: Flavor, session: Any
 ) -> None:
     with (
-        HttpServer(lambda handler, seen: send(handler, 200, PRICES)) as other,
+        HttpServer(lambda handler, seen: send(handler, 200, PRICES_BODY)) as other,
         HttpServer(
             lambda handler, seen: send(handler, 302, Location=f"{other.url}/v1/prices/730.json")
         ) as origin,
@@ -104,7 +100,7 @@ def test_a_same_origin_redirect_is_followed_over_a_real_connection(
         if seen.path == "/v1/prices/730.json":
             send(handler, 301, Location="/v1/moved/730.json")
         else:
-            send(handler, 200, PRICES)
+            send(handler, 200, PRICES_BODY)
 
     with HttpServer(answer) as origin:
         client = session(flavor, origin.url)
@@ -131,7 +127,7 @@ def test_a_redirect_loop_stops_after_three_redirects(flavor: Flavor, session: An
 def test_the_request_on_the_wire_carries_gzip_and_no_credential(
     flavor: Flavor, session: Any
 ) -> None:
-    with HttpServer(lambda handler, seen: send(handler, 200, PRICES)) as origin:
+    with HttpServer(lambda handler, seen: send(handler, 200, PRICES_BODY)) as origin:
         session(flavor, origin.url).prices()
 
         headers = origin.record.requests[0].headers
@@ -257,6 +253,6 @@ def test_a_status_other_than_200_fails_at_the_call_on_a_real_connection(
 @each_flavor
 def test_a_gzip_body_over_a_real_connection(flavor: Flavor, session: Any) -> None:
     with HttpServer(
-        lambda handler, seen: send(handler, 200, gz(PRICES), Content_Encoding="gzip")
+        lambda handler, seen: send(handler, 200, gz(PRICES_BODY), Content_Encoding="gzip")
     ) as origin:
         assert len(session(flavor, origin.url).prices()) == 1

@@ -7,10 +7,13 @@ from typing import Any
 
 from whitemarket._runtime.secret import Secret
 from whitemarket.live._connection import Incoming
+from whitemarket.live._envelope import Publication
 from whitemarket.live._policy import ConnectInfo
 from whitemarket.live.async_session import AsyncLiveSession
+from whitemarket.live.events import UnknownEvent
 from whitemarket.live.options import LiveOptions
 
+EVENT = Publication("broadcast", {"message": '{"type":"x","content":{}}'})
 DEFAULT_INFO = ConnectInfo(ping=25, pong=True, ttl=None)
 
 
@@ -104,7 +107,7 @@ class FakeConnection:
 
 
 @dataclass
-class Rig:
+class LiveRig:
     clock: FakeClock
     connection: FakeConnection
     tokens: FakeTokens
@@ -112,9 +115,9 @@ class Rig:
     calls: list[tuple[str, Any]]
 
 
-def make_rig(
+def make_live_rig(
     *, can_subscribe: bool = True, options: LiveOptions | None = None, random_value: float = 1.0
-) -> Rig:
+) -> LiveRig:
     clock = FakeClock()
     connection = FakeConnection(clock, can_subscribe_after_connect=can_subscribe)
     tokens = FakeTokens()
@@ -131,4 +134,10 @@ def make_rig(
     session.on_connected(lambda reconnected: calls.append(("connected", reconnected)))
     session.on_disconnected(lambda info: calls.append(("disconnected", info)))
     session.on_error(lambda error: calls.append(("error", error)))
-    return Rig(clock, connection, tokens, session, calls)
+    return LiveRig(clock, connection, tokens, session, calls)
+
+
+async def drain(rig: LiveRig) -> None:
+    """Poll until an event comes (the last connection of the script yields one)."""
+    event = await rig.session.poll(100_000)
+    assert isinstance(event, UnknownEvent)

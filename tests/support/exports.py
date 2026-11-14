@@ -74,6 +74,9 @@ PRICE_ROW: dict[str, Any] = {
     "inspect_link": "steam://synthetic",
 }
 
+PRICES_BODY = json_body([PRICE_ROW])  # a prices file of one row
+
+
 PRODUCT_ROW: dict[str, Any] = {
     "product_id": "00000000-0000-4000-8000-000000000001",
     "product_category": "RIFLES",

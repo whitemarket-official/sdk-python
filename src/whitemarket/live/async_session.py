@@ -1,38 +1,18 @@
 """`AsyncLiveSession`: live updates for `AsyncWhiteMarketClient` (SDK_SPEC 3.11)."""
 
 import asyncio
-import importlib
-import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
-from typing import Final, Self, cast
+from typing import Self
 
-from whitemarket.live._connection import Connection
+from whitemarket.live import _policy as policy
+from whitemarket.live._connection import Connection, build_connection
 from whitemarket.live._engine import Engine, TokenSource
 from whitemarket.live._handlers import LiveHandlers
 from whitemarket.live._registry import Registry
 from whitemarket.live.events import DealEvent, LiveEvent
 from whitemarket.live.options import LiveOptions, LiveTransport
-
-SYSTEM_RANDOM: Final = random.SystemRandom().random
-
-
-def build_connection(
-    transport: LiveTransport,
-    *,
-    ws_url: str,
-    sse_url: str,
-    user_agent: str,
-    options: LiveOptions,
-) -> Connection:
-    """The connection of a transport; the WebSocket one needs the `live` extra."""
-    if transport is LiveTransport.SSE:
-        sse = importlib.import_module("whitemarket.live._sse")
-        return cast("Connection", sse.SseConnection(sse_url, user_agent, options))
-    # Imported here: it needs the optional `live` extra, SSE does not.
-    ws = importlib.import_module("whitemarket.live._ws")
-    return cast("Connection", ws.WsConnection(ws_url, user_agent))
 
 
 class AsyncLiveSession(Registry):
@@ -52,7 +32,7 @@ class AsyncLiveSession(Registry):
         options: LiveOptions | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        random_source: Callable[[], float] = SYSTEM_RANDOM,
+        random_source: Callable[[], float] = policy.SYSTEM_RANDOM,
     ) -> None:
         handlers = LiveHandlers()
         self._engine = Engine(
@@ -89,12 +69,12 @@ class AsyncLiveSession(Registry):
 
     async def poll(self, timeout: float | None = None) -> LiveEvent | None:
         """The next event after its handlers ran, `None` after `timeout` seconds or once closed."""
-        _check_seconds("timeout", timeout)
+        policy.check_seconds("timeout", timeout)
         return await self._engine.poll(timeout)
 
     async def run(self, duration: float | None = None) -> None:
         """Dispatch events to the handlers for `duration` seconds (`None`: until `close()`)."""
-        _check_seconds("duration", duration)
+        policy.check_seconds("duration", duration)
         until = None if duration is None else self._engine.now() + duration
         while not self._engine.closed:
             remaining = None if until is None else until - self._engine.now()
@@ -119,7 +99,7 @@ class AsyncLiveSession(Registry):
         the session like `poll()` does: do not run another consumer at the same time. A live
         event is a hint, never the state.
         """
-        _check_seconds("timeout", timeout)
+        policy.check_seconds("timeout", timeout)
         until = self._engine.now() + timeout
         while not self._engine.closed:
             remaining = until - self._engine.now()
@@ -148,8 +128,3 @@ class AsyncLiveSession(Registry):
         traceback: TracebackType | None,
     ) -> None:
         await self.close()
-
-
-def _check_seconds(name: str, value: float | None) -> None:
-    if value is not None and not value >= 0:  # also rejects NaN
-        raise ValueError(f"{name} must be a number of seconds, 0 or more")

@@ -19,14 +19,12 @@ from whitemarket.errors import DecodeError
 from whitemarket.exports import (
     ExportFormat,
     ProductRow,
-    RowDecoder,
     aiter_price_rows,
     aiter_product_rows,
     iter_price_rows,
     iter_product_rows,
-    price_row_decoder,
-    product_row_decoder,
 )
+from whitemarket.exports._stream import RowDecoder, price_row_decoder, product_row_decoder
 
 
 @pytest.mark.parametrize("fmt", [ExportFormat.JSON, ExportFormat.CSV])

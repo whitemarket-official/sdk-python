@@ -4,6 +4,9 @@ from pydantic import ValidationError
 
 from whitemarket.errors import DecodeError
 
+DecodePath = tuple[str | int, ...]
+"""Where a value sits in a record: keys and indexes, outermost first."""
+
 
 def decode_error_from(exc: ValidationError) -> DecodeError:
     """Build a `DecodeError` from the path and reason of the first problem and a count of the rest.

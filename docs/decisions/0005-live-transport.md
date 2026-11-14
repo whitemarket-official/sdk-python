@@ -83,7 +83,7 @@ splitting, subscribe and its own resubscribe for pushes `>= 2500`. What the SDK 
   stops the library reading, i.e. TCP backpressure), the session reads them in `poll()`.
 - Personal channels (leading `#`) are never subscribed.
 
-SSE: own parser (`sse_parser.py`) over `httpx` streaming with `aiter_bytes()` (not `aiter_lines()`: its line splitting is
+SSE: own parser (`_sse_parser.py`) over `httpx` streaming with `aiter_bytes()` (not `aiter_lines()`: its line splitting is
 `str.splitlines`-like and treats U+2028 / U+0085 as line ends, which SSE does not, and it has no size cap), a per-event
 and per-line size cap, no redirects, `Accept-Encoding: identity`, the SDK's own `httpx.AsyncClient` per connection.
 

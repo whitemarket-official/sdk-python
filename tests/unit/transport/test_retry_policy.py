@@ -6,7 +6,7 @@ import pytest
 
 from whitemarket import RetryPolicy
 from whitemarket._runtime.operation import OperationType
-from whitemarket.retry import parse_retry_after
+from whitemarket._runtime.retry_after import parse_retry_after
 
 NOW = datetime(2026, 11, 6, 7, 28, 0, tzinfo=UTC)
 

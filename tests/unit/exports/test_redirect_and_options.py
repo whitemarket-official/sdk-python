@@ -6,10 +6,10 @@ from typing import Any
 import pytest
 
 from whitemarket._runtime import endpoints
+from whitemarket._runtime.export_redirect import Origin, redirect_target
+from whitemarket._runtime.export_urls import export_file_url, max_age_seconds
 from whitemarket.errors import TransportError
 from whitemarket.exports import ExportFormat, ExportKind, ExportWindow
-from whitemarket.exports.redirect import Origin, redirect_target
-from whitemarket.exports.urls import export_file_url, max_age_seconds
 
 ORIGIN = Origin("https", "export.test", 443)
 

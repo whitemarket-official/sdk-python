@@ -9,8 +9,8 @@ import pytest
 
 from support.exports import BACKENDS, CHUNK_SIZES, Watched, chunked
 from whitemarket.errors import DecodeError
-from whitemarket.exports.json_rows import JsonArrayReader, is_too_deep
-from whitemarket.exports.limits import MAX_ROW_BYTES, MAX_ROW_DEPTH, PUSH_STEP
+from whitemarket.exports._json_rows import JsonArrayReader, is_too_deep
+from whitemarket.exports._limits import MAX_ROW_BYTES, MAX_ROW_DEPTH, PUSH_STEP
 
 pytestmark = pytest.mark.parametrize("backend", BACKENDS)
 

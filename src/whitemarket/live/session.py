@@ -8,20 +8,23 @@ an exception from one propagates to the caller exactly as in the async session.
 """
 
 import asyncio
+import contextlib
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable, Coroutine, Iterator
+from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import Future
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, Self, TypeVar, cast
 
 from whitemarket._runtime.secret import Secret
 from whitemarket._sync.tokens import TokenProvider
-from whitemarket.live._connection import Connection
+from whitemarket.live import _policy as policy
+from whitemarket.live._connection import Connection, build_connection
 from whitemarket.live._engine import Engine
 from whitemarket.live._handlers import LiveDisconnected, LiveHandlers
 from whitemarket.live._registry import Registry
-from whitemarket.live.async_session import build_connection
 from whitemarket.live.events import DealEvent, LiveEvent
 from whitemarket.live.options import LiveOptions, LiveTransport
 
@@ -85,7 +88,17 @@ class _Loop:
 
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        try:
+            self._loop.run_forever()
+        finally:
+            # Whatever still waits (a consumer blocked in `poll()`) is cancelled, so that its
+            # blocking caller wakes instead of waiting for a loop that no longer runs.
+            tasks = asyncio.all_tasks(self._loop)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                self._loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+            self._loop.close()
 
     def submit(self, coroutine: Coroutine[Any, Any, _T]) -> "Future[_T]":
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop)
@@ -93,13 +106,15 @@ class _Loop:
     def call_soon(self, callback: Callable[..., None], *args: Any) -> None:
         self._loop.call_soon_threadsafe(callback, *args)
 
+    def shutdown(self) -> None:
+        """Ask the thread to end; does not wait (also used by a finalizer, on any thread)."""
+        with contextlib.suppress(RuntimeError):  # the loop is already closed
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
     def stop(self) -> None:
-        if not self._thread.is_alive():
-            return
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(_JOIN_SECONDS)
-        if not self._thread.is_alive():
-            self._loop.close()
+        self.shutdown()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(_JOIN_SECONDS)
 
 
 class LiveSession(Registry):
@@ -171,14 +186,29 @@ class LiveSession(Registry):
         with self._lock:
             if self._loop is None:
                 self._loop = _Loop()
+                # A session dropped without `close()` must not leave its thread running.
+                weakref.finalize(self, self._loop.shutdown)
             return self._loop, self._engine
 
     def _call(self, make: Callable[[Engine], Coroutine[Any, Any, _T]]) -> _T:
+        """Run one engine call on the loop thread and wait. A closed session returns `None`, also
+        when `close()` (another thread) ends the loop under this call."""
+        if self._closed:
+            return cast("_T", None)
         loop, engine = self._started()
+        coroutine = make(engine)
         try:
-            return loop.submit(make(engine)).result()
+            return loop.submit(coroutine).result()
+        except (FutureCancelledError, RuntimeError):
+            if not self._is_closed():  # `close()` runs on another thread: read it afresh
+                raise
+            coroutine.close()
+            return cast("_T", None)
         finally:
             self._dispatch()
+
+    def _is_closed(self) -> bool:
+        return self._closed
 
     def _dispatch(self) -> None:
         """Run what the engine reported, in order, on this thread; an exception propagates and
@@ -193,14 +223,12 @@ class LiveSession(Registry):
 
     def poll(self, timeout: float | None = None) -> LiveEvent | None:
         """The next event after its handlers ran, `None` after `timeout` seconds or once closed."""
-        if timeout is not None and not timeout >= 0:
-            raise ValueError("timeout must be a number of seconds, 0 or more")
+        policy.check_seconds("timeout", timeout)
         return self._call(lambda engine: engine.poll(timeout))
 
     def run(self, duration: float | None = None) -> None:
         """Dispatch events to the handlers for `duration` seconds (`None`: until `close()`)."""
-        if duration is not None and not duration >= 0:
-            raise ValueError("duration must be a number of seconds, 0 or more")
+        policy.check_seconds("duration", duration)
         _, engine = self._started()
         until = None if duration is None else engine.now() + duration
         while not self._closed and not engine.closed:
@@ -221,8 +249,7 @@ class LiveSession(Registry):
 
         For `deals.wait_for(..., live=session)`; see `AsyncLiveSession.wait_for_deal_event`.
         """
-        if not timeout >= 0:
-            raise ValueError("timeout must be a number of seconds, 0 or more")
+        policy.check_seconds("timeout", timeout)
         _, engine = self._started()
         until = engine.now() + timeout
         while not self._closed and not engine.closed:

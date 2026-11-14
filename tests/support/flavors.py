@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import pytest
 
 TOKEN_JWT_BODY = {"data": {"auth_token": {"accessToken": "", "isNewPerson": False}}}
 
@@ -66,8 +67,12 @@ class Flavor:
 
         return record
 
-    def mock_http(self, handler: Callable[[httpx.Request], httpx.Response]) -> Any:
-        return self.http_client_class(transport=httpx.MockTransport(handler))
+    def mock_http(
+        self, handler: Callable[[httpx.Request], httpx.Response], **client_options: Any
+    ) -> Any:
+        """A client over `handler`; `client_options` are httpx client arguments (an injected client
+        with its own redirect policy, default headers, auth)."""
+        return self.http_client_class(transport=httpx.MockTransport(handler), **client_options)
 
     def close(self, http: Any) -> None:
         self.run(http.aclose()) if self.is_async else http.close()
@@ -76,3 +81,5 @@ class Flavor:
 ASYNC = Flavor("async", "_async")
 SYNC = Flavor("sync", "_sync")
 FLAVORS = [ASYNC, SYNC]
+
+each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)

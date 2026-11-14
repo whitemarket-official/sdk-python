@@ -12,7 +12,7 @@ import csv
 from collections.abc import Iterator
 
 from whitemarket.errors import DecodeError
-from whitemarket.exports.limits import MAX_ROW_BYTES, PUSH_STEP
+from whitemarket.exports._limits import MAX_ROW_BYTES, PUSH_STEP
 
 _BOM = "\ufeff"  # U+FEFF, written as an escape so the source has no invisible character
 _BYTES_PER_CHAR = 4  # the most one character takes in UTF-8

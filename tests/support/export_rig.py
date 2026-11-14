@@ -53,14 +53,17 @@ class Rig:
         http: Any = None,
         retry: RetryPolicy | None = None,
         cache: Any = None,
+        client_options: dict[str, Any] | None = None,
         **options: Any,
     ) -> None:
         self.flavor = flavor
         self.runner = asyncio.Runner() if flavor.is_async else None
         self.script = Script(*outcomes) if outcomes else None
         self.sleeps: list[float] = []
-        self.http = http or flavor.mock_http(self.script or Script(reply(500)))
-        seams = flavor.cls("transport", "TransportSeams")(
+        self.http = http or flavor.mock_http(
+            self.script or Script(reply(500)), **(client_options or {})
+        )
+        seams = flavor.cls("seams", "TransportSeams")(
             clock=lambda: NOW, sleeper=flavor.sleeper(self.sleeps), random=lambda: 0.5
         )
         options.setdefault("base_url", BASE)

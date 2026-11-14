@@ -7,14 +7,14 @@ import pytest
 
 from support.exports import PRICE_ROW, achunked, chunked, fixture, json_body
 from whitemarket.errors import DecodeError
-from whitemarket.exports import ExportFormat, PriceList, PriceRow, iter_price_rows
+from whitemarket.exports import ExportFormat, PriceList, PriceRow, aiter_price_rows, iter_price_rows
 from whitemarket.models import Money
 
 DOPPLER = "★ Synthetic Knife | Doppler (Factory New)"
 
 
 def fixture_list(name: str, fmt: ExportFormat) -> PriceList:
-    return PriceList.from_chunks(chunked(fixture(name), 100), fmt)
+    return PriceList(iter_price_rows(chunked(fixture(name), 100), fmt))
 
 
 def make_row(name: str = "A", paint_index: str = "0", price: str = "1") -> PriceRow:
@@ -126,12 +126,14 @@ def test_a_bad_row_in_the_file_fails_the_whole_list_with_its_path() -> None:
     body = json_body([PRICE_ROW, {**PRICE_ROW, "price": 7}])
 
     with pytest.raises(DecodeError) as error:
-        PriceList.from_chunks(chunked(body, 100))
+        PriceList(iter_price_rows(chunked(body, 100)))
 
     assert error.value.path == ("prices", 1, "price")
 
 
 async def test_the_async_loader_gives_the_same_list() -> None:
-    prices = await PriceList.afrom_chunks(achunked(fixture("prices.json"), 50))
+    prices = PriceList(
+        [row async for row in aiter_price_rows(achunked(fixture("prices.json"), 50))]
+    )
 
     assert list(prices) == list(fixture_list("prices.json", ExportFormat.JSON))

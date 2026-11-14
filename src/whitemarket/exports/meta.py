@@ -25,7 +25,7 @@ class ExportMeta:
     items: int
 
 
-def parse_meta(body: bytes | str) -> ExportMeta:
+def parse_meta(body: bytes | bytearray | str) -> ExportMeta:
     """Parse the body of a `.meta.json` file.
 
     `data_as_of` and `generated_at` must be ISO 8601 date-times with an offset; the result is

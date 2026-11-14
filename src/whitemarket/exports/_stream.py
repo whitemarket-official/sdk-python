@@ -7,12 +7,12 @@ once. The chunks are the already decompressed bytes of the body, in any size (th
 them internally).
 """
 
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Generator, Iterable, Iterator
 from functools import partial
 from typing import Any, Generic, Protocol, TypeVar
 
-from whitemarket.exports.csv_rows import CsvRecordReader
-from whitemarket.exports.json_rows import JsonArrayReader
+from whitemarket.exports._csv_rows import CsvRecordReader
+from whitemarket.exports._json_rows import JsonArrayReader
 from whitemarket.exports.kinds import ExportFormat, ExportKind
 from whitemarket.exports.mappers import Path, map_price_row, map_product_row
 from whitemarket.exports.rows import PriceRow, ProductRow
@@ -91,7 +91,7 @@ def product_row_decoder(
     return RowDecoder(JsonArrayReader(root, backend=json_backend), root, map_product_row)
 
 
-def iter_rows(decoder: RowDecoder[Row], chunks: Iterable[bytes]) -> Iterator[Row]:
+def iter_rows(decoder: RowDecoder[Row], chunks: Iterable[bytes]) -> Generator[Row, None, None]:
     """Decode `chunks` lazily, one row in memory; the chunk source is closed at the end."""
     try:
         for chunk in chunks:
@@ -104,7 +104,9 @@ def iter_rows(decoder: RowDecoder[Row], chunks: Iterable[bytes]) -> Iterator[Row
             close()
 
 
-async def aiter_rows(decoder: RowDecoder[Row], chunks: AsyncIterable[bytes]) -> AsyncIterator[Row]:
+async def aiter_rows(
+    decoder: RowDecoder[Row], chunks: AsyncIterable[bytes]
+) -> AsyncGenerator[Row, None]:
     """The async twin of `iter_rows`: the same decoder, fed from an async chunk source."""
     try:
         async for chunk in chunks:
@@ -122,7 +124,7 @@ async def aiter_rows(decoder: RowDecoder[Row], chunks: AsyncIterable[bytes]) -> 
 def iter_price_rows(
     chunks: Iterable[bytes],
     format: ExportFormat = ExportFormat.JSON,
-) -> Iterator[PriceRow]:
+) -> Generator[PriceRow, None, None]:
     """Stream the rows of a prices file."""
     return iter_rows(price_row_decoder(format), chunks)
 
@@ -130,7 +132,7 @@ def iter_price_rows(
 def iter_product_rows(
     chunks: Iterable[bytes],
     format: ExportFormat = ExportFormat.JSON,
-) -> Iterator[ProductRow]:
+) -> Generator[ProductRow, None, None]:
     """Stream the rows of a products file."""
     return iter_rows(product_row_decoder(format), chunks)
 
@@ -138,7 +140,7 @@ def iter_product_rows(
 def aiter_price_rows(
     chunks: AsyncIterable[bytes],
     format: ExportFormat = ExportFormat.JSON,
-) -> AsyncIterator[PriceRow]:
+) -> AsyncGenerator[PriceRow, None]:
     """Stream the rows of a prices file from an async chunk source."""
     return aiter_rows(price_row_decoder(format), chunks)
 
@@ -146,6 +148,6 @@ def aiter_price_rows(
 def aiter_product_rows(
     chunks: AsyncIterable[bytes],
     format: ExportFormat = ExportFormat.JSON,
-) -> AsyncIterator[ProductRow]:
+) -> AsyncGenerator[ProductRow, None]:
     """Stream the rows of a products file from an async chunk source."""
     return aiter_rows(product_row_decoder(format), chunks)

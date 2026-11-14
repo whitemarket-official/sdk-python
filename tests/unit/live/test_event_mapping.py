@@ -7,9 +7,8 @@ from typing import Any
 
 import pytest
 
-from whitemarket._generated.enums import MarketDealActionType
 from whitemarket.errors.base import DecodeError
-from whitemarket.live.envelope import MappedEvent, Publication, decode_message, map_publication
+from whitemarket.live._envelope import MappedEvent, Publication, decode_message, map_publication
 from whitemarket.live.events import (
     DealCancelled,
     DealCompleted,
@@ -25,7 +24,7 @@ from whitemarket.live.events import (
     ProductRemoved,
     UnknownEvent,
 )
-from whitemarket.models.enums import DeliveryPromise, DeliveryType
+from whitemarket.models.enums import DealAction, DeliveryPromise, DeliveryType
 from whitemarket.models.money import Money
 
 PRODUCTS = "market_products_updates"
@@ -121,8 +120,8 @@ def test_product_added_from_the_wire_envelope() -> None:
     assert event.delivery_promise is DeliveryPromise.MINUTES10
     assert event.float == Decimal("0.152345")
     assert (event.paint_index, event.paint_seed) == ("282", "661")
-    assert event.stickers == [{"slot": 0, "name": "Sticker | Test", "wear": "0.1"}]
-    assert event.keychains == [{"slot": 0, "name": "Charm | Test", "pattern": "42"}]
+    assert event.stickers == ({"slot": 0, "name": "Sticker | Test", "wear": "0.1"},)
+    assert event.keychains == ({"slot": 0, "name": "Charm | Test", "pattern": "42"},)
     assert dict(event.extra) == {}
 
 
@@ -220,7 +219,7 @@ def test_blank_optionals_and_missing_lists_are_none_and_empty() -> None:
 
     assert (event.inspect_link, event.float, event.paint_index, event.paint_seed) == (None,) * 4
     assert (event.delivery_type, event.delivery_promise) == (None, None)
-    assert (event.stickers, event.keychains) == ([], [])
+    assert (event.stickers, event.keychains) == ((), ())
 
 
 def test_missing_optional_keys_are_none() -> None:
@@ -305,7 +304,7 @@ def test_edited_stickers_sent_empty_differ_from_not_sent() -> None:
     event = mapped(message(EDITED, stickers=[])).event
 
     assert isinstance(event, ProductEdited)
-    assert event.stickers == []
+    assert event.stickers == ()
     assert event.keychains is None
 
 
@@ -364,7 +363,7 @@ def test_each_deal_type_maps_to_its_class(kind: str, cls: type[DealEvent]) -> No
     assert isinstance(event, DealEvent)
     assert event.channel == PERSONAL
     assert event.deal_id == "22222222-2222-4222-8222-222222222222"
-    assert event.action is MarketDealActionType.BUY
+    assert event.action is DealAction.BUY
     assert event.product_name == "AK-47 | Test (Field-Tested)"
     assert event.steam_id == "SYNTHETIC-STEAM-ID"
     assert dict(event.extra) == {}
@@ -625,3 +624,24 @@ def test_map_publication_never_raises_on_hostile_shapes() -> None:
 
     for data in shapes:
         assert isinstance(map_publication(Publication(PERSONAL, data)), MappedEvent)
+
+
+def test_an_unknown_deal_action_is_a_pseudo_member_not_an_error() -> None:
+    content = {**DEAL_CONTENT, "deal_action_type": "teleport"}
+
+    result = mapped({"type": "market_deal_offered", "content": content}, PERSONAL)
+
+    assert result.error is None
+    assert isinstance(result.event, DealEvent)
+    assert result.event.action.value == "TELEPORT"
+    assert result.event.action.is_unknown
+
+
+def test_the_unknown_event_repr_does_not_show_the_raw_content() -> None:
+    content = {**DEAL_CONTENT, "deal_action_type": 5}  # malformed: becomes an UnknownEvent
+
+    result = mapped({"type": "market_deal_offered", "content": content}, PERSONAL)
+
+    assert isinstance(result.event, UnknownEvent)
+    assert result.error is not None
+    assert "SYNTHETIC-STEAM-ID" not in repr(result.event)

@@ -7,8 +7,8 @@ import pytest
 
 from support.exports import CHUNK_SIZES, Watched, chunked, fixture
 from whitemarket.errors import DecodeError
-from whitemarket.exports.csv_rows import CsvRecordReader
-from whitemarket.exports.limits import MAX_ROW_BYTES, PUSH_STEP
+from whitemarket.exports._csv_rows import CsvRecordReader
+from whitemarket.exports._limits import MAX_ROW_BYTES, PUSH_STEP
 
 AB = [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]
 

@@ -18,7 +18,7 @@ from importlib import import_module
 from typing import Any, cast
 
 from whitemarket.errors import DecodeError
-from whitemarket.exports.limits import MAX_ROW_BYTES, MAX_ROW_DEPTH, PUSH_STEP
+from whitemarket.exports._limits import MAX_ROW_BYTES, MAX_ROW_DEPTH, PUSH_STEP
 
 _WHITE_SPACE = b" \t\n\r"
 _DIGITS = b"0123456789"

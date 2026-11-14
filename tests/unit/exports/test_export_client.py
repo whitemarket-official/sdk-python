@@ -12,12 +12,11 @@ from support.export_rig import (
     BASE,
     GZIP,
     META_BODY,
-    Rig,
     gz,
     ok,
 )
-from support.exports import PRICE_ROW, fixture, json_body
-from support.flavors import FLAVORS, Flavor
+from support.exports import PRICE_ROW, PRICES_BODY, fixture, json_body
+from support.flavors import Flavor, each_flavor
 from support.http import reply
 from whitemarket import ExportOptions
 from whitemarket.errors import (
@@ -25,25 +24,6 @@ from whitemarket.errors import (
     HttpError,
 )
 from whitemarket.exports import ExportFormat, ExportKind, ExportWindow, PriceList
-
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
-
-PRICES = json_body([PRICE_ROW])
-
-
-@pytest.fixture
-def rigs() -> Any:
-    made: list[Rig] = []
-
-    def make(flavor: Flavor, *outcomes: Any, **kwargs: Any) -> Rig:
-        rig = Rig(flavor, *outcomes, **kwargs)
-        made.append(rig)
-        return rig
-
-    yield make
-    for rig in made:
-        rig.close()
-
 
 # --- URLs and arguments ----------------------------------------------------------------------
 
@@ -61,7 +41,7 @@ def rigs() -> Any:
     ],
 )
 def test_prices_url_follows_the_window(flavor: Flavor, rigs: Any, window: Any, suffix: str) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     rig.prices(window=window)
 
@@ -71,7 +51,7 @@ def test_prices_url_follows_the_window(flavor: Flavor, rigs: Any, window: Any, s
 @each_flavor
 @pytest.mark.parametrize("app", [1, 730, 2**31 - 1])
 def test_a_valid_app_id_is_in_the_url(flavor: Flavor, rigs: Any, app: int) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     rig.prices(app=app)
 
@@ -91,7 +71,7 @@ def test_a_valid_app_id_is_in_the_url(flavor: Flavor, rigs: Any, app: int) -> No
 def test_an_invalid_app_id_fails_before_any_request(
     flavor: Flavor, rigs: Any, app: Any, error: type[Exception]
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     for method in ("prices", "stream_prices", "stream_products"):
         with pytest.raises(error):
@@ -158,7 +138,7 @@ def test_invalid_options_are_refused(options: dict[str, Any]) -> None:
 
 @each_flavor
 def test_a_request_asks_for_gzip_and_carries_no_credential(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, ok(META_BODY), ok(PRICES), user_agent_suffix="app/1")
+    rig = rigs(flavor, ok(META_BODY), ok(PRICES_BODY), user_agent_suffix="app/1")
 
     rig.prices(max_age=timedelta(hours=1))
 
@@ -190,7 +170,7 @@ def test_prices_returns_the_parsed_list(flavor: Flavor, rigs: Any) -> None:
 
 @each_flavor
 def test_a_gzip_body_is_decoded(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, ok(gz(PRICES), **GZIP))
+    rig = rigs(flavor, ok(gz(PRICES_BODY), **GZIP))
 
     assert len(rig.prices()) == 1
 

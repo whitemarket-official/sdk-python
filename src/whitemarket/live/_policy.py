@@ -1,5 +1,6 @@
 """Pure rules of a live session: backoff, close codes, connect info (SDK_SPEC 3.11, 1.4)."""
 
+import random
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Final
@@ -17,6 +18,7 @@ DEFAULT_PING_SECONDS: Final = 25
 MAX_PING_SECONDS: Final = 300
 IDLE_GRACE_SECONDS: Final = 10
 EPSILON: Final = 1e-6
+SYSTEM_RANDOM: Final = random.SystemRandom().random
 
 AUTH_EXPIRED_REPLY: Final = 109
 ALREADY_SUBSCRIBED_REPLY: Final = 105
@@ -26,6 +28,11 @@ RESUBSCRIBE_FROM: Final = 2500
 
 PRODUCTS_CHANNEL: Final = "market_products_updates"
 PERSONAL_PREFIX: Final = "#"
+
+
+def is_personal(channel: str) -> bool:
+    """A personal channel (`#<personId>`) is subscribed by the server on connect."""
+    return channel.startswith(PERSONAL_PREFIX)
 
 
 def backoff_delay(attempt: int, random_value: float) -> float:
@@ -80,3 +87,9 @@ class ConnectInfo:
     @property
     def idle_seconds(self) -> float | None:
         return None if self.ping is None else float(self.ping + IDLE_GRACE_SECONDS)
+
+
+def check_seconds(name: str, value: float | None) -> None:
+    """Refuse a negative or NaN duration; `None` means no limit."""
+    if value is not None and not value >= 0:  # also rejects NaN
+        raise ValueError(f"{name} must be a number of seconds, 0 or more")

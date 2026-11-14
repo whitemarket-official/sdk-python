@@ -5,21 +5,20 @@ dicts) or from CSV (strings and None). Every failure is a `DecodeError` with the
 offending value and a fixed reason; a value from the file is never put in a message.
 """
 
-import re
 from collections.abc import Mapping
 from decimal import Decimal
-from types import MappingProxyType
 from typing import Any, cast
 
+from whitemarket._runtime.decimals import parse_decimal
+from whitemarket._runtime.decode import DecodePath
+from whitemarket._runtime.wire_text import DIGITS, delivery_promise, unmapped
 from whitemarket.errors import DecodeError
 from whitemarket.exports.rows import PriceRow, ProductRow
-from whitemarket.models.enums import Currency, DeliveryPromise, DeliveryType, ItemCategory
+from whitemarket.models.enums import Currency, DeliveryType, ItemCategory
 from whitemarket.models.money import Money
 
-Path = tuple[str | int, ...]
+Path = DecodePath
 
-_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
-_DIGITS = re.compile(r"[0-9]+")
 _MAX_INT_DIGITS = 4000  # below the interpreter limit of int(str)
 
 _PRICE_KEYS = frozenset(
@@ -56,12 +55,6 @@ _PRODUCT_KEYS = frozenset(
         "inspectLink",
     )
 )
-_PROMISES = {
-    "10min": DeliveryPromise.MINUTES10.value,
-    "1hour": DeliveryPromise.HOUR1.value,
-    "12hours": DeliveryPromise.HOURS12.value,
-    "24hours": DeliveryPromise.HOURS24.value,
-}
 
 
 def map_price_row(raw: Any, path: Path, *, text: bool = False) -> PriceRow:
@@ -77,7 +70,7 @@ def map_price_row(raw: Any, path: Path, *, text: bool = False) -> PriceRow:
         paint_index=_string(row, "paint_index", path),
         paint_seed=_string(row, "paint_seed", path),
         inspect_link=_non_empty(row, "inspect_link", path),
-        extra=_extra(row, _PRICE_KEYS),
+        extra=unmapped(row, _PRICE_KEYS),
     )
 
 
@@ -87,7 +80,7 @@ def map_product_row(raw: Any, path: Path) -> ProductRow | None:
     if "product_category" in row and row["product_category"] is None:
         return None
     delivery_type = _nullable_string(row, "deliveryType", path)
-    delivery_promise = _nullable_string(row, "deliveryPromise", path)
+    promise_text = _nullable_string(row, "deliveryPromise", path)
     return ProductRow(
         product_id=_string(row, "product_id", path),
         market_hash_name=_string(row, "name_hash", path),
@@ -106,11 +99,9 @@ def map_product_row(raw: Any, path: Path) -> ProductRow | None:
         paint_seed=_nullable_id(row, "product_paint_seed", path),
         phase=_nullable_string(row, "product_phase", path),
         delivery_type=None if delivery_type is None else DeliveryType(delivery_type.upper()),
-        delivery_promise=None
-        if delivery_promise is None
-        else DeliveryPromise(_PROMISES.get(delivery_promise, delivery_promise)),
+        delivery_promise=None if promise_text is None else delivery_promise(promise_text),
         inspect_link=_non_empty(row, "inspectLink", path),
-        extra=_extra(row, _PRODUCT_KEYS),
+        extra=unmapped(row, _PRODUCT_KEYS),
     )
 
 
@@ -142,25 +133,15 @@ def _non_empty(row: Mapping[str, Any], key: str, path: Path) -> str | None:
     return _nullable_string(row, key, path) or None
 
 
-def _to_decimal(text: str) -> Decimal | None:
-    return Decimal(text) if _DECIMAL.fullmatch(text) else None
-
-
 def _decimal(row: Mapping[str, Any], key: str, path: Path) -> Decimal:
-    value = _to_decimal(_string(row, key, path))
-    if value is None:
-        raise _fail("not a decimal number", path, key)
-    return value
+    return parse_decimal(_string(row, key, path), (*path, key))
 
 
 def _nullable_decimal(row: Mapping[str, Any], key: str, path: Path) -> Decimal | None:
     text = _nullable_string(row, key, path)
     if text is None:
         return None
-    value = _to_decimal(text)
-    if value is None:
-        raise _fail("not a decimal number", path, key)
-    return value
+    return parse_decimal(text, (*path, key))
 
 
 def _digits(value: Any) -> str | None:
@@ -175,7 +156,7 @@ def _digits(value: Any) -> str | None:
             return str(value) if value >= 0 else None
         except ValueError:  # beyond the interpreter's integer-to-text digit limit
             return None
-    if isinstance(value, str) and _DIGITS.fullmatch(value):
+    if isinstance(value, str) and DIGITS.fullmatch(value):
         return value
     return None
 
@@ -202,7 +183,3 @@ def _count(row: Mapping[str, Any], key: str, path: Path, *, text: bool) -> int:
     elif isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     raise _fail("missing or not a non-negative integer", path, key)
-
-
-def _extra(row: Mapping[str, Any], known: frozenset[str]) -> Mapping[str, Any]:
-    return MappingProxyType({key: value for key, value in row.items() if key not in known})

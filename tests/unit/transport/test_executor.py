@@ -6,18 +6,13 @@ from typing import Any
 
 import pytest
 
-from support.flavors import FLAVORS, Flavor
+from support.flavors import Flavor
 from support.http import Script, data, json_response, reply
 from support.rigs import Stack, body_of
 from whitemarket.errors import DecodeError, GraphQLError, NotFoundError, ServiceUnavailableError
 
 ACCESS = "static.access.token"
 LEAK = "leaked.jwt.value"
-
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "flavor" in metafunc.fixturenames:
-        metafunc.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @pytest.fixture
@@ -206,8 +201,8 @@ def test_the_executor_never_retries_a_mutation_document_declared_a_query(
 @pytest.mark.parametrize(
     ("partial", "kept"),
     [
-        pytest.param({"auth_token": {"accessToken": LEAK}}, None, id="auth_token only"),
-        pytest.param({"auth_steam_jwt": {"accessToken": LEAK}}, None, id="auth_steam_jwt only"),
+        pytest.param({"auth_token": {"accessToken": LEAK}}, {}, id="auth_token only"),
+        pytest.param({"auth_steam_jwt": {"accessToken": LEAK}}, {}, id="auth_steam_jwt only"),
         pytest.param(
             {"auth_token": {"accessToken": LEAK}, "test_ping": "pong"},
             {"test_ping": "pong"},
@@ -217,7 +212,7 @@ def test_the_executor_never_retries_a_mutation_document_declared_a_query(
     ],
 )
 def test_the_credential_of_an_exchange_never_lands_in_partial_data(
-    make: Any, partial: dict[str, Any], kept: dict[str, Any] | None
+    make: Any, partial: dict[str, Any], kept: dict[str, Any]
 ) -> None:
     stack, _ = make(json_response({"data": partial, "errors": [{"message": "partly failed"}]}))
 

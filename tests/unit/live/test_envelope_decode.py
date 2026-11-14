@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from whitemarket.errors.base import DecodeError
-from whitemarket.live.envelope import (
+from whitemarket.live._envelope import (
     ConnectReply,
     Disconnect,
     OtherMessage,

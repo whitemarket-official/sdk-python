@@ -11,6 +11,7 @@ Every method blocks: the async client runs them in a worker thread (`async_run_b
 import contextlib
 import os
 import secrets
+import stat
 from pathlib import Path
 from typing import BinaryIO, Final, Protocol
 
@@ -22,6 +23,12 @@ _NAME_PART: Final = 40
 _CREATE_TRIES: Final = 8
 _NO_FOLLOW: Final = getattr(os, "O_NOFOLLOW", 0)
 _WRITE_FAILED: Final = "Writing the download failed."
+_NO_TEMPORARY: Final = "Cannot create a temporary file next to the download destination."
+
+
+def _chmod(descriptor: int, mode: int) -> None:
+    if hasattr(os, "fchmod"):  # not on every platform; the mode is a no-op there anyway
+        os.fchmod(descriptor, mode)
 
 
 class DownloadSink(Protocol):
@@ -30,6 +37,11 @@ class DownloadSink(Protocol):
     def commit(self) -> None: ...
 
     def abort(self) -> None: ...
+
+
+def abort_sink(sink: DownloadSink) -> None:
+    """Give a sink back unused (`abort` as a function, for a cleanup callback)."""
+    sink.abort()
 
 
 def open_sink(destination: Destination) -> DownloadSink:
@@ -45,11 +57,12 @@ def open_sink(destination: Destination) -> DownloadSink:
 class _FileSink:
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._temporary, self._file = self._create()
+        self._temporary, self._file, self._new_mode = self._create()
 
-    def _create(self) -> tuple[Path, BinaryIO]:
-        # Mode 0666 with O_EXCL: the umask gives the file the mode a new file would have, and a
-        # name that exists (or a symlink planted there) is never opened.
+    def _create(self) -> tuple[Path, BinaryIO, int]:
+        # Mode 0666 with O_EXCL: the umask gives the file the mode a new file would have (kept
+        # for the commit), and a name that exists (or a symlink planted there) is never opened.
+        # The file is made private (0600) before anything is written to it.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NO_FOLLOW
         name = self._path.name[:_NAME_PART]
         for _ in range(_CREATE_TRIES):
@@ -59,11 +72,16 @@ class _FileSink:
             except FileExistsError:
                 continue
             except OSError as error:
-                raise GeneralExportError(
-                    "Cannot create a temporary file next to the download destination."
-                ) from error
-            return temporary, os.fdopen(descriptor, "wb")
-        raise GeneralExportError("Cannot create a temporary file next to the download destination.")
+                raise GeneralExportError(_NO_TEMPORARY) from error
+            try:
+                new_mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+                _chmod(descriptor, 0o600)
+            except OSError as error:
+                os.close(descriptor)
+                temporary.unlink(missing_ok=True)
+                raise GeneralExportError(_NO_TEMPORARY) from error
+            return temporary, os.fdopen(descriptor, "wb"), new_mode
+        raise GeneralExportError(_NO_TEMPORARY)
 
     def write(self, data: bytes) -> None:
         try:
@@ -75,10 +93,19 @@ class _FileSink:
         try:
             self._file.flush()
             os.fsync(self._file.fileno())
+            _chmod(self._file.fileno(), self._final_mode())
             self._file.close()
             os.replace(self._temporary, self._path)
         except OSError as error:
             raise GeneralExportError("Cannot move the finished download into place.") from error
+
+    def _final_mode(self) -> int:
+        """The mode of the file being replaced, else the mode a new file would get (as PHP's
+        `0666 & ~umask()`)."""
+        try:
+            return stat.S_IMODE(os.stat(self._path).st_mode)
+        except OSError:
+            return self._new_mode
 
     def abort(self) -> None:
         with contextlib.suppress(OSError):

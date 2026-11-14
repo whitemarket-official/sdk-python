@@ -2,6 +2,8 @@
 9). Every test runs for both flavors.
 """
 
+import asyncio
+import gc
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -17,12 +19,11 @@ from support.export_rig import (
     META_BODY,
     META_URL,
     PRICES_URL,
-    Rig,
     gz,
     ok,
 )
-from support.exports import PRICE_ROW, PRODUCT_ROW, fixture, json_body
-from support.flavors import FLAVORS, Flavor
+from support.exports import PRICES_BODY, PRODUCT_ROW, fixture, json_body
+from support.flavors import ASYNC, Flavor, each_flavor
 from support.http import Chunks, reply
 from whitemarket.errors import (
     DecodeError,
@@ -33,23 +34,7 @@ from whitemarket.errors import (
 )
 from whitemarket.exports import ExportFormat, ExportKind, ExportWindow
 
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
-PRICES = json_body([PRICE_ROW])
 HOUR = 3600
-
-
-@pytest.fixture
-def rigs() -> Any:
-    made: list[Rig] = []
-
-    def make(flavor: Flavor, *outcomes: Any, **kwargs: Any) -> Rig:
-        rig = Rig(flavor, *outcomes, **kwargs)
-        made.append(rig)
-        return rig
-
-    yield make
-    for rig in made:
-        rig.close()
 
 
 def meta_aged(seconds: float) -> bytes:
@@ -91,7 +76,7 @@ def test_data_older_than_max_age_is_stale_and_the_file_is_not_downloaded(
     ],
 )
 def test_the_max_age_boundary(flavor: Flavor, rigs: Any, age: int, fresh: bool) -> None:
-    rig = rigs(flavor, ok(meta_aged(age)), ok(PRICES))
+    rig = rigs(flavor, ok(meta_aged(age)), ok(PRICES_BODY))
 
     if fresh:
         assert len(rig.prices(max_age=HOUR)) == 1
@@ -154,12 +139,12 @@ DOWNLOAD = (ExportKind.PRICES, 730, None, ExportFormat.JSON)
 def test_a_download_is_written_to_the_path_decoded(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(gz(PRICES), **GZIP))
+    rig = rigs(flavor, ok(gz(PRICES_BODY), **GZIP))
     target = tmp_path / "prices.json"
 
     rig.call("download", *DOWNLOAD, target)
 
-    assert target.read_bytes() == PRICES
+    assert target.read_bytes() == PRICES_BODY
     assert [p.name for p in tmp_path.iterdir()] == ["prices.json"]
 
 
@@ -176,7 +161,7 @@ def test_a_download_has_no_size_limit(flavor: Flavor, rigs: Any, tmp_path: Path)
 
 @each_flavor
 def test_a_download_gets_the_mode_of_a_new_file(flavor: Flavor, rigs: Any, tmp_path: Path) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
     target = tmp_path / "p.json"
     umask = os.umask(0o022)
     try:
@@ -188,16 +173,83 @@ def test_a_download_gets_the_mode_of_a_new_file(flavor: Flavor, rigs: Any, tmp_p
 
 
 @each_flavor
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_the_temporary_file_is_private_while_it_is_written(
+    flavor: Flavor, rigs: Any, tmp_path: Path
+) -> None:
+    seen: list[int] = []
+
+    def watch(request: httpx.Request) -> httpx.Response:
+        class Peek(Chunks):
+            def __iter__(self) -> Any:
+                yield b"[ "
+                seen.extend(stat.S_IMODE(p.stat().st_mode) for p in tmp_path.iterdir())
+                yield b"]"
+
+            async def __aiter__(self) -> Any:
+                for chunk in self:
+                    yield chunk
+
+        return httpx.Response(200, stream=Peek([]))
+
+    rig = rigs(flavor, watch)
+    umask = os.umask(0o022)
+    try:
+        rig.call("download", *DOWNLOAD, tmp_path / "p.json")
+    finally:
+        os.umask(umask)
+
+    assert seen == [0o600], "the file in progress is not readable by others"
+
+
+@each_flavor
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_download_over_an_existing_file_keeps_its_mode(
+    flavor: Flavor, rigs: Any, tmp_path: Path
+) -> None:
+    rig = rigs(flavor, ok(PRICES_BODY))
+    target = tmp_path / "p.json"
+    target.write_bytes(b"old")
+    target.chmod(0o640)
+
+    rig.call("download", *DOWNLOAD, target)
+
+    assert target.read_bytes() == PRICES_BODY
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_cancelling_a_download_right_after_it_starts_leaves_no_temporary_file(
+    rigs: Any, tmp_path: Path
+) -> None:
+    rig = rigs(ASYNC, ok(PRICES_BODY))
+
+    async def cancelled_early() -> None:
+        task = asyncio.ensure_future(rig.client.download(*DOWNLOAD, tmp_path / "p.json"))
+        await asyncio.sleep(0)  # the worker thread that creates the file has been started
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        for _ in range(200):  # the worker finishes on its own; give its cleanup time to run
+            await asyncio.sleep(0.01)
+            if not os.listdir(tmp_path):
+                return
+
+    rig.run(cancelled_early())
+
+    assert list(tmp_path.iterdir()) == [], "no .part file and no half-written destination"
+
+
+@each_flavor
 def test_a_download_accepts_a_pathlike_and_replaces_an_existing_file(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
     target = tmp_path / "p.json"
     target.write_bytes(b"old")
 
     rig.call("download", *DOWNLOAD, target)
 
-    assert target.read_bytes() == PRICES
+    assert target.read_bytes() == PRICES_BODY
 
 
 @each_flavor
@@ -211,7 +263,7 @@ def test_a_failed_download_leaves_the_old_file_and_no_temporary_file(
     outcome = {
         "status": reply(404),
         "network": refused,
-        "body": ok(gz(PRICES)[:-8], **GZIP),
+        "body": ok(gz(PRICES_BODY)[:-8], **GZIP),
     }[failure]
     rig = rigs(flavor, outcome)
     target = tmp_path / "p.json"
@@ -246,7 +298,7 @@ def test_a_download_failing_halfway_removes_its_temporary_file(
 def test_a_directory_as_destination_is_refused_before_the_request(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     with pytest.raises(GeneralExportError, match="directory"):
         rig.call("download", *DOWNLOAD, tmp_path)
@@ -258,7 +310,7 @@ def test_a_directory_as_destination_is_refused_before_the_request(
 def test_a_destination_in_a_missing_directory_is_a_general_export_error(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     with pytest.raises(GeneralExportError, match="temporary file"):
         rig.call("download", *DOWNLOAD, tmp_path / "missing" / "p.json")
@@ -268,13 +320,13 @@ def test_a_destination_in_a_missing_directory_is_a_general_export_error(
 def test_a_download_into_a_binary_stream_leaves_it_open(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(gz(PRICES), **GZIP))
+    rig = rigs(flavor, ok(gz(PRICES_BODY), **GZIP))
 
     with (tmp_path / "s.bin").open("wb") as stream:
         rig.call("download", *DOWNLOAD, stream)
         assert not stream.closed
 
-    assert (tmp_path / "s.bin").read_bytes() == PRICES
+    assert (tmp_path / "s.bin").read_bytes() == PRICES_BODY
 
 
 class Trickle:
@@ -298,12 +350,12 @@ class Trickle:
 
 @each_flavor
 def test_a_stream_that_takes_less_than_it_is_given_gets_the_rest(flavor: Flavor, rigs: Any) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
     stream = Trickle()
 
     rig.call("download", *DOWNLOAD, stream)
 
-    assert bytes(stream.data) == PRICES
+    assert bytes(stream.data) == PRICES_BODY
     assert stream.flushed
 
 
@@ -328,7 +380,7 @@ class ReadOnly(Trickle):
 def test_a_stream_that_cannot_be_written_is_a_general_export_error(
     flavor: Flavor, rigs: Any, stream: type[Trickle], message: str
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     with pytest.raises(GeneralExportError, match=message):
         rig.call("download", *DOWNLOAD, stream())
@@ -338,7 +390,7 @@ def test_a_stream_that_cannot_be_written_is_a_general_export_error(
 def test_a_download_follows_the_same_rules_for_the_url(
     flavor: Flavor, rigs: Any, tmp_path: Path
 ) -> None:
-    rig = rigs(flavor, ok(PRICES))
+    rig = rigs(flavor, ok(PRICES_BODY))
 
     rig.call(
         "download", ExportKind.PRODUCTS, 570, ExportWindow.HOURS12, ExportFormat.CSV, tmp_path / "x"
@@ -350,29 +402,24 @@ def test_a_download_follows_the_same_rules_for_the_url(
 # --- streamed products -----------------------------------------------------------------------
 
 
-class Watched(httpx.SyncByteStream, httpx.AsyncByteStream):
-    """A body that notes how much was pulled and whether it was closed."""
+class Watched(Chunks):
+    """Scripted chunks that also count how often the body was closed."""
 
-    def __init__(self, parts: list[bytes]) -> None:
-        self.parts = parts
-        self.pulled = 0
-        self.closed = False
+    closes = 0
 
-    def __iter__(self) -> Any:
-        for part in self.parts:
-            self.pulled += 1
-            yield part
+    @property
+    def closed(self) -> bool:
+        return self.closes > 0
 
-    async def __aiter__(self) -> Any:
-        for part in self.parts:
-            self.pulled += 1
-            yield part
+    @property
+    def total(self) -> int:
+        return sum(map(len, self._chunks))
 
     def close(self) -> None:
-        self.closed = True
+        self.closes += 1
 
     async def aclose(self) -> None:
-        self.closed = True
+        self.closes += 1
 
 
 def product_json(count: int) -> list[bytes]:
@@ -394,7 +441,7 @@ def test_stopping_the_iteration_closes_the_connection_and_reads_no_more(
 
     assert len(rows) == 3
     assert body.closed
-    assert body.pulled < len(body.parts)
+    assert body.served < body.total, "the rest of the body was not read"
 
 
 @each_flavor
@@ -407,6 +454,33 @@ def test_closing_a_stream_never_iterated_closes_the_connection(flavor: Flavor, r
     rig.run(stream.aclose()) if flavor.is_async else stream.close()
 
     assert body.closed
+
+
+@each_flavor
+def test_a_stream_dropped_without_closing_closes_the_connection_when_collected(
+    flavor: Flavor, rigs: Any
+) -> None:
+    body = Watched(product_json(5))
+    rig = rigs(flavor, lambda request: httpx.Response(200, stream=body))
+
+    async def drop_unstarted_and_abandoned() -> None:
+        unstarted = await rig.client.stream_products()
+        started = await rig.client.stream_products()
+        await anext(started)
+        del unstarted, started
+        gc.collect()
+        for _ in range(5):
+            await asyncio.sleep(0)  # the close is scheduled on the running loop
+
+    if flavor.is_async:
+        rig.run(drop_unstarted_and_abandoned())
+    else:
+        unstarted, started = rig.call("stream_products"), rig.call("stream_products")
+        next(started)
+        del unstarted, started
+        gc.collect()
+
+    assert body.closes == 2, "both abandoned streams closed their connection"
 
 
 @each_flavor

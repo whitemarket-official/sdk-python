@@ -11,25 +11,37 @@ data older than `max_age` is a `StaleExportError`. An argument error is a `Value
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
+from typing import BinaryIO, Literal, overload
 
 import httpx
 
 from whitemarket._async.export_cache import AsyncExportCache
 from whitemarket._async.export_stream import AsyncRowStream, replay
-from whitemarket._async.export_transport import AsyncExportTransport, http_timeout
-from whitemarket._async.transport import AsyncTransportSeams
-from whitemarket._concurrency import async_run_blocking
-from whitemarket._runtime.download_sink import Destination, open_sink
+from whitemarket._async.export_transport import (
+    AsyncExportBody,
+    AsyncExportTransport,
+    http_timeout,
+)
+from whitemarket._async.seams import AsyncTransportSeams
+from whitemarket._concurrency import async_acquire_blocking, async_run_blocking
+from whitemarket._runtime.body import BodyBytes, body_pieces
+from whitemarket._runtime.download_sink import abort_sink, open_sink
+from whitemarket._runtime.export_urls import (
+    DEFAULT_APP,
+    META_SUFFIX,
+    export_file_url,
+    max_age_seconds,
+)
 from whitemarket.errors.base import StaleExportError
+from whitemarket.exports._stream import aiter_product_rows, iter_price_rows
 from whitemarket.exports.conditional import NotModified
 from whitemarket.exports.kinds import ExportFormat, ExportKind
 from whitemarket.exports.meta import ExportMeta, parse_meta
 from whitemarket.exports.options import ExportOptions
 from whitemarket.exports.price_list import PriceList
 from whitemarket.exports.rows import PriceRow, ProductRow
-from whitemarket.exports.stream import aiter_product_rows, iter_price_rows
-from whitemarket.exports.urls import DEFAULT_APP, META_SUFFIX, export_file_url, max_age_seconds
 from whitemarket.exports.window import ExportWindow
 
 _JSON = ExportFormat.JSON
@@ -39,9 +51,10 @@ class AsyncExportClient:
     """Downloads the public export files of `export.white.market`.
 
     Without `http_client` the SDK creates an httpx client with the connect and idle timeouts of
-    `options` and no total timeout, and closes it in `aclose()`. An injected client is used as is:
-    the SDK cannot set its timeouts, it must not follow redirects (the SDK follows them itself,
-    under the rules of SDK_SPEC 3.10) and it must carry no credential; it stays open. TLS
+    `options` and no total timeout, and closes it in `aclose()`. An injected client keeps its
+    timeouts and stays open, but every request is sent with `follow_redirects=False`, `auth=None`
+    and none of the client's default headers or cookies (the SDK follows redirects itself, under
+    the rules of SDK_SPEC 3.10). TLS
     verification is always on.
 
     `cache` holds the `ETag` and `Last-Modified` of the files fetched with `conditional=True`
@@ -81,6 +94,26 @@ class AsyncExportClient:
         """The freshness sidecar `<file>.meta.json` of an export file."""
         return await self._fetch_meta(self._file_url(kind, app, window, format))
 
+    @overload
+    async def prices(
+        self,
+        app: int = DEFAULT_APP,
+        window: ExportWindow | None = None,
+        *,
+        conditional: Literal[False] = False,
+        max_age: timedelta | float | None = None,
+    ) -> PriceList: ...
+
+    @overload
+    async def prices(
+        self,
+        app: int = DEFAULT_APP,
+        window: ExportWindow | None = None,
+        *,
+        conditional: bool,
+        max_age: timedelta | float | None = None,
+    ) -> PriceList | NotModified: ...
+
     async def prices(
         self,
         app: int = DEFAULT_APP,
@@ -107,8 +140,8 @@ class AsyncExportClient:
             body = fetched
         else:
             body = await self._transport.get(url)
-        data = await body.read(self._options.max_body_bytes)
-        price_list = PriceList.from_chunks([data])
+        data = await self._read_whole(body)
+        price_list = PriceList(iter_price_rows(body_pieces(data)))
         if conditional:
             await self._transport.remember(body)
         return price_list
@@ -129,8 +162,8 @@ class AsyncExportClient:
         url = self._file_url(ExportKind.PRICES, app, window, _JSON)
         await self._assert_fresh(url, max_age)
         body = await self._transport.get(url)
-        data = await body.read(self._options.max_body_bytes)
-        return AsyncRowStream(replay(list(iter_price_rows([data]))), body)
+        data = await self._read_whole(body)
+        return AsyncRowStream(replay(list(iter_price_rows(body_pieces(data)))), body)
 
     async def stream_products(
         self,
@@ -159,7 +192,7 @@ class AsyncExportClient:
         app: int,
         window: ExportWindow | None,
         format: ExportFormat,
-        destination: Destination,
+        destination: str | os.PathLike[str] | BinaryIO,
     ) -> None:
         """Write the decoded file to `destination` as it arrives: no memory held, no size limit.
 
@@ -169,7 +202,7 @@ class AsyncExportClient:
         unrewound. A destination that cannot be written is a `GeneralExportError`.
         """
         url = self._file_url(kind, app, window, format)
-        sink = await async_run_blocking(open_sink, destination)
+        sink = await async_acquire_blocking(open_sink, abort_sink, destination)
         body = None
         try:
             body = await self._transport.get(url)
@@ -202,9 +235,12 @@ class AsyncExportClient:
     ) -> str:
         return export_file_url(self._options.base_url, kind, app, window, format)
 
+    async def _read_whole(self, body: AsyncExportBody) -> BodyBytes:
+        return await body.read(self._options.max_body_bytes)
+
     async def _fetch_meta(self, file_url: str) -> ExportMeta:
         body = await self._transport.get(file_url + META_SUFFIX)
-        return parse_meta(await body.read(self._options.max_body_bytes))
+        return parse_meta(await self._read_whole(body))
 
     async def _assert_fresh(self, file_url: str, max_age: timedelta | float | None) -> None:
         seconds = max_age_seconds(max_age)

@@ -9,11 +9,16 @@ that too). Time comes from an injected monotonic clock, sleeper and random sourc
 import asyncio
 import logging
 import math
-import random
 import time
 from collections.abc import Awaitable, Callable
-from typing import Final, NoReturn, Protocol
+from typing import Final, NoReturn, Protocol, TypeVar
 
+from whitemarket._runtime.http_errors import (
+    SERVER_ERRORS,
+    TOO_MANY_REQUESTS,
+    UNAUTHORIZED,
+    http_error_for,
+)
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import (
     DecodeError,
@@ -24,29 +29,40 @@ from whitemarket.errors.base import (
 from whitemarket.errors.http import AuthenticationError, HttpError
 from whitemarket.live import _policy as policy
 from whitemarket.live._connection import (
-    HTTP_SERVER_ERRORS,
-    HTTP_TOO_MANY_REQUESTS,
-    HTTP_UNAUTHORIZED,
     Connection,
     ConnectRejectedError,
     ServerClosedError,
+    SlowConsumerError,
     StatusFailureError,
-    http_error,
 )
-from whitemarket.live._handlers import LiveDisconnected
-from whitemarket.live.envelope import (
+from whitemarket.live._envelope import (
     Disconnect,
     Publication,
     Reply,
     Unsubscribe,
     map_publication,
 )
+from whitemarket.live._handlers import LiveDisconnected
 from whitemarket.live.events import LiveEvent
 from whitemarket.live.options import LiveOptions
 
 _LOGGER: Final = logging.getLogger("whitemarket.live")
 _INF: Final = math.inf
-_SYSTEM_RANDOM: Final = random.SystemRandom().random
+_T = TypeVar("_T")
+_E = TypeVar("_E", bound=BaseException)
+
+
+class _InterruptedError(Exception):
+    """`close()` was called while the session waited (backoff, token fetch, connect)."""
+
+
+def _scrubbed(error: _E) -> _E:
+    """The error without its traceback and chain. The frames it passed hold the connect request,
+    and with it the token; a traceback tool that prints locals must not find it (SDK_SPEC 8)."""
+    error.__traceback__ = None
+    error.__context__ = None
+    error.__cause__ = None
+    return error
 
 
 class TokenSource(Protocol):
@@ -81,7 +97,7 @@ class Engine:
         sink: Sink,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        random_source: Callable[[], float] = _SYSTEM_RANDOM,
+        random_source: Callable[[], float] = policy.SYSTEM_RANDOM,
     ) -> None:
         self._tokens = tokens
         self._connection = connection
@@ -94,6 +110,7 @@ class Engine:
         self._channels: list[str] = []
         self._pending: list[str] = []
         self._closed = False
+        self._close_event = asyncio.Event()
         self._connected = False
         self._ever_connected = False
         self._force_refresh = False
@@ -142,7 +159,7 @@ class Engine:
         an `HttpError` on a terminal failure, and whatever a handler raises."""
         self._enter()
         try:
-            return await self._poll(_INF if wait is None else self._now() + wait)
+            return await self._poll(_INF if wait is None else self.now() + wait)
         finally:
             self._polling = False
 
@@ -150,6 +167,7 @@ class Engine:
         if self._closed:
             return
         self._closed = True
+        self._close_event.set()
         was_connected = await self._end_connection()
         _LOGGER.info("live: closed (attempt %d)", self._attempt)
         if was_connected:
@@ -187,48 +205,78 @@ class Engine:
         return None
 
     async def _attempt_connect(self, until: float) -> None:
-        now = self._now()
+        try:
+            await self._attempt_once(until)
+        except _InterruptedError:
+            return  # `close()` ended the wait: the loops see `_closed`
+
+    async def _attempt_once(self, until: float) -> None:
+        now = self.now()
         if not self._reached(self._next_attempt_at):
             wait = min(self._next_attempt_at - now, until - now)
             if wait > 0:
-                await self._sleeper(wait)
+                await self._wait_or_close(self._sleeper(wait))
             return
         await self._sink.connecting()
         if self._closed:
             return
+        token = await self._token_for_attempt()
+        if token is not None:
+            await self._open(token)
+
+    async def _token_for_attempt(self) -> Secret | None:
+        """The token to connect with, or `None` after a failure that was handled."""
+        fetch = self._tokens.refresh() if self._force_refresh else self._tokens.access_token()
         try:
-            token = await (
-                self._tokens.refresh() if self._force_refresh else self._tokens.access_token()
-            )
-            self._force_refresh = False
+            token = await self._wait_or_close(fetch)
         except AuthenticationError as error:
-            await self._terminate(await self._end_connection(), error, None, "")
+            await self._terminate(await self._end_connection(), _scrubbed(error), None, "")
         except HttpError as error:
+            _scrubbed(error)
             await self._handle_http_failure(
-                error.status, getattr(error, "retry_after", None), False, error
+                error.status, getattr(error, "retry_after", None), error
             )
-            return
+            return None
         except WhiteMarketError as error:
-            await self._handle_failed_attempt(error)
-            return
-        await self._open(token)
+            await self._handle_failed_attempt(_scrubbed(error))
+            return None
+        self._force_refresh = False
+        return token
 
     async def _open(self, token: Secret) -> None:
+        opening = self._connection.open(token, self._channels, self._options.connect_timeout)
         try:
-            info = await self._connection.open(token, self._channels, self._options.connect_timeout)
+            info = await self._wait_or_close(opening)
         except ConnectRejectedError as rejected:
-            await self._handle_connect_rejected(rejected)
+            await self._handle_connect_rejected(_scrubbed(rejected))
         except ServerClosedError as closed:
+            _scrubbed(closed)
             await self._handle_close_code(closed.code, closed.reason)
         except StatusFailureError as failure:
-            await self._handle_http_failure(failure.status, failure.retry_after, True, None)
+            _scrubbed(failure)
+            await self._handle_stream_status(failure.status, failure.retry_after)
         except TransportError as error:
-            await self._handle_failed_attempt(error)
+            await self._handle_failed_attempt(_scrubbed(error))
         else:
             await self._established(info)
 
+    async def _wait_or_close(self, awaitable: Awaitable[_T]) -> _T:
+        """Await `awaitable`, but stop waiting (and cancel it) when `close()` is called."""
+        work = asyncio.ensure_future(awaitable)
+        closing = asyncio.ensure_future(self._close_event.wait())
+        try:
+            await asyncio.wait({work, closing}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            closing.cancel()
+            if not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
+        if work.cancelled():
+            raise _InterruptedError
+        return work.result()
+
     async def _established(self, info: policy.ConnectInfo) -> None:
-        now = self._now()
+        now = self.now()
         ttl = info.ttl
         short_lived = ttl is not None and ttl <= policy.REFRESH_BELOW
         if short_lived and not self._refresh_used_in_streak:
@@ -250,7 +298,7 @@ class Engine:
         await self._sink.connected(reconnected)
 
     async def _read_once(self, deadline: float) -> LiveEvent | None:
-        remaining = None if deadline == _INF else max(0.0, deadline - self._now())
+        remaining = None if deadline == _INF else max(0.0, deadline - self.now())
         try:
             message = await self._connection.read(remaining)
         except DecodeError as error:
@@ -260,6 +308,13 @@ class Engine:
         except ServerClosedError as closed:
             if not self._closed:
                 await self._handle_close_code(closed.code, closed.reason)
+            return None
+        except SlowConsumerError:
+            if not self._closed:
+                await self._sink.error(
+                    LiveConnectionError(None, "the consumer is too slow: the connection was reset")
+                )
+                await self._reconnect_after_backoff()
             return None
         except TransportError:
             if not self._closed:  # `close()` woke the reader
@@ -272,7 +327,7 @@ class Engine:
 
     def _touch_idle(self) -> None:
         if self._idle_seconds is not None:
-            self._idle_deadline = self._now() + self._idle_seconds
+            self._idle_deadline = self.now() + self._idle_seconds
 
     async def _process(self, message: object) -> LiveEvent | None:
         if isinstance(message, Publication):
@@ -296,7 +351,7 @@ class Engine:
         if error is None or error.code == policy.ALREADY_SUBSCRIBED_REPLY:
             return  # a success, or "already subscribed", which counts as subscribed
         if error.code == policy.AUTH_EXPIRED_REPLY:
-            await self._handle_auth_rejection(error.code, error.message, None)
+            await self._handle_auth_rejection(error.code, error.message)
             return
         await self._sink.error(LiveConnectionError(error.code, error.message))
 
@@ -331,12 +386,15 @@ class Engine:
     async def _handle_close_code(self, code: int, reason: str) -> None:
         kind = policy.classify_close(code)
         if kind is policy.CloseKind.TOKEN_INVALID:
-            await self._handle_auth_rejection(code, reason, None)
+            await self._handle_auth_rejection(code, reason)
         elif kind is policy.CloseKind.RECONNECT:
+            # End the connection first: a connection that stayed up closes the streak, and the
+            # refresh-once rule below must see the new streak, not the one that just ended.
+            was_connected = await self._end_connection()
             if code == policy.TOKEN_EXPIRED_CLOSE and not self._refresh_used_in_streak:
                 self._refresh_used_in_streak = True
                 self._force_refresh = True
-            await self._reconnect_after_backoff(code, reason)
+            await self._schedule_after_backoff(was_connected, code, reason, None)
         elif kind is policy.CloseKind.TERMINAL:
             await self._terminate(
                 await self._end_connection(), LiveConnectionError(code, reason), code, reason
@@ -353,30 +411,31 @@ class Engine:
 
     async def _handle_connect_rejected(self, rejected: ConnectRejectedError) -> None:
         if rejected.code == policy.AUTH_EXPIRED_REPLY:
-            await self._handle_auth_rejection(rejected.code, "", None)
+            await self._handle_auth_rejection(rejected.code, "")
         elif rejected.temporary:
-            await self._handle_failed_attempt(rejected_as_error(rejected))
+            await self._handle_failed_attempt(LiveConnectionError(rejected.code))
         else:
             await self._terminate(
                 await self._end_connection(), LiveConnectionError(rejected.code), rejected.code, ""
             )
 
+    async def _handle_stream_status(self, status: int, retry_after: float | None) -> None:
+        """The stream's own answer: a 401 refreshes once (a provider's 401 is final)."""
+        if status == UNAUTHORIZED:
+            await self._handle_auth_rejection(status, "")
+        else:
+            await self._handle_http_failure(
+                status, retry_after, http_error_for(status, b"", retry_after)
+            )
+
     async def _handle_http_failure(
-        self,
-        status: int,
-        retry_after: float | None,
-        from_stream: bool,
-        original: HttpError | None,
+        self, status: int, retry_after: float | None, error: HttpError
     ) -> None:
-        """401 from the stream refreshes once (a provider's 401 is final); 429 and 5xx reconnect
-        (`Retry-After` lengthens the wait, at most 5 minutes); other statuses stop."""
-        if status == HTTP_UNAUTHORIZED and from_stream:
-            await self._handle_auth_rejection(status, "", None)
-        elif status == HTTP_TOO_MANY_REQUESTS or status in HTTP_SERVER_ERRORS:
-            error = original if original is not None else http_error(status, retry_after)
+        """429 and 5xx reconnect (`Retry-After` lengthens the wait, at most 5 minutes); other
+        statuses stop."""
+        if status == TOO_MANY_REQUESTS or status in SERVER_ERRORS:
             await self._handle_failed_attempt(error, retry_after)
         else:
-            error = original if original is not None else http_error(status, retry_after)
             await self._terminate(await self._end_connection(), error, None, "")
 
     async def _handle_failed_attempt(
@@ -386,17 +445,10 @@ class Engine:
         await self._reconnect_after_backoff(min_wait=min_wait)
         await self._sink.error(error)
 
-    async def _handle_auth_rejection(
-        self, code: int, reason: str, original: HttpError | None
-    ) -> None:
+    async def _handle_auth_rejection(self, code: int, reason: str) -> None:
         was_connected = await self._end_connection()
         if self._auth_retried:
-            await self._terminate(
-                was_connected,
-                original if isinstance(original, AuthenticationError) else AuthenticationError(),
-                code,
-                reason,
-            )
+            await self._terminate(was_connected, AuthenticationError(), code, reason)
         self._auth_retried = True
         self._force_refresh = True
         await self._schedule_now(was_connected, code, reason)
@@ -432,7 +484,7 @@ class Engine:
         await self._schedule_after_backoff(await self._end_connection(), code, reason, min_wait)
 
     async def _schedule_now(self, was_connected: bool, code: int | None, reason: str) -> None:
-        self._next_attempt_at = self._now()
+        self._next_attempt_at = self.now()
         await self._announce_disconnect(was_connected, code, reason)
 
     async def _schedule_after_backoff(
@@ -448,7 +500,7 @@ class Engine:
                 reason,
             )
         delay = policy.backoff_delay(self._attempt, self._random())
-        self._next_attempt_at = self._now() + max(min_wait or 0.0, delay)
+        self._next_attempt_at = self.now() + max(min_wait or 0.0, delay)
         await self._announce_disconnect(was_connected, code, reason)
 
     async def _announce_disconnect(
@@ -462,6 +514,7 @@ class Engine:
         self, was_connected: bool, error: Exception, code: int | None, reason: str
     ) -> NoReturn:
         self._closed = True
+        self._close_event.set()
         _LOGGER.info("live: stopped (code %s, attempt %d)", code, self._attempt)
         if was_connected:
             await self._sink.disconnected(LiveDisconnected(code, reason, False))
@@ -471,27 +524,23 @@ class Engine:
         """Release the connection; True when it had been announced as connected. A connection that
         stayed up `STABLE_AFTER` ends the streak: counters reset."""
         was_connected = self._connected
-        if was_connected and self._connected_long_enough():
-            self._attempt = 0
-            self._auth_retried = False
-            self._refresh_used_in_streak = False
-            self._other_closes = 0
+        self._close_streak_if_stable()
         self._connected = False
         self._refresh_at = None
         self._idle_deadline = None
         await self._connection.close()
         return was_connected
 
-    def _now(self) -> float:
-        return self._clock()
+    def _close_streak_if_stable(self) -> None:
+        """A connection up for `STABLE_AFTER` ends the streak: counters reset. Idempotent."""
+        if self._connected and self._connected_long_enough():
+            self._attempt = 0
+            self._auth_retried = False
+            self._refresh_used_in_streak = False
+            self._other_closes = 0
 
     def _connected_long_enough(self) -> bool:
         return self._reached(self._connected_at + policy.STABLE_AFTER)
 
     def _reached(self, moment: float) -> bool:
-        return self._now() >= moment - policy.EPSILON
-
-
-def rejected_as_error(rejected: ConnectRejectedError) -> LiveConnectionError:
-    """A temporary connect rejection for `on_error`: the code only, no server text."""
-    return LiveConnectionError(rejected.code)
+        return self.now() >= moment - policy.EPSILON

@@ -13,8 +13,10 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, TypeVar, cast
 
-from whitemarket._generated.enums import MarketDealActionType
+from whitemarket._runtime.decimals import parse_decimal
+from whitemarket._runtime.decode import DecodePath
 from whitemarket._runtime.json_codec import decode as _decode_json
+from whitemarket._runtime.wire_text import DIGITS, delivery_promise, unmapped
 from whitemarket.errors.base import DecodeError
 from whitemarket.live.events import (
     DealCancelled,
@@ -32,18 +34,16 @@ from whitemarket.live.events import (
     ProductRemoved,
     UnknownEvent,
 )
-from whitemarket.models.decimals import parse_decimal
-from whitemarket.models.enums import DeliveryPromise, DeliveryType
+from whitemarket.models.enums import DealAction, DeliveryPromise, DeliveryType
 from whitemarket.models.money import Money
 
-Path = tuple[str | int, ...]
+Path = DecodePath
 
 MAX_TEXT_BYTES = 128
 # Same rule as PHP's `json_decode(depth: 64)`: a container nested 64 levels deep is refused.
 _MAX_DEPTH = 64
 
 _NON_PRINTABLE = re.compile(rb"[^\x20-\x7e]")
-_DIGITS = re.compile(r"[0-9]+")
 _BLANK_CHARS = " \t\n\r\0\x0b"
 _ROOT: Path = ("live",)
 _T = TypeVar("_T")
@@ -341,15 +341,6 @@ _DEALS: Mapping[str, type[DealEvent]] = MappingProxyType(
         "market_deal_hold": DealHold,
     }
 )
-# Live messages write the promise as the export window suffix (`10min`), the schema as an enum name.
-_PROMISES: Mapping[str, str] = MappingProxyType(
-    {
-        "10min": DeliveryPromise.MINUTES10.value,
-        "1hour": DeliveryPromise.HOUR1.value,
-        "12hours": DeliveryPromise.HOURS12.value,
-        "24hours": DeliveryPromise.HOURS24.value,
-    }
-)
 
 
 def map_publication(publication: Publication) -> MappedEvent:
@@ -406,10 +397,6 @@ def _known(channel: str, message_type: str, c: Mapping[str, Any], path: Path) ->
     return _removed(channel, c, path)
 
 
-def _extra(c: Mapping[str, Any], known: frozenset[str]) -> Mapping[str, Any]:
-    return MappingProxyType({k: v for k, v in c.items() if k not in known})
-
-
 def _added(channel: str, c: Mapping[str, Any], path: Path) -> ProductAdded:
     return ProductAdded(
         channel=channel,
@@ -426,9 +413,9 @@ def _added(channel: str, c: Mapping[str, Any], path: Path) -> ProductAdded:
         float=_wear(c, path),
         paint_index=_optional(c, "paint_index", path),
         paint_seed=_optional(c, "paint_seed", path),
-        stickers=_list(c, "stickers", path) or [],
-        keychains=_list(c, "keychains", path) or [],
-        extra=_extra(c, _PRODUCT_KEYS),
+        stickers=_list(c, "stickers", path) or (),
+        keychains=_list(c, "keychains", path) or (),
+        extra=unmapped(c, _PRODUCT_KEYS),
     )
 
 
@@ -451,7 +438,7 @@ def _edited(channel: str, c: Mapping[str, Any], path: Path) -> ProductEdited:
         paint_seed=_optional(c, "paint_seed", path),
         stickers=_list(c, "stickers", path),
         keychains=_list(c, "keychains", path),
-        extra=_extra(c, _PRODUCT_KEYS),
+        extra=unmapped(c, _PRODUCT_KEYS),
     )
 
 
@@ -465,7 +452,7 @@ def _removed(channel: str, c: Mapping[str, Any], path: Path) -> ProductRemoved:
         instance_id=_required_id(c, "instance_id", path),
         price=_price(c, path),
         market_hash_name=_required(c, "name_hash", path),
-        extra=_extra(c, _REMOVED_KEYS),
+        extra=unmapped(c, _REMOVED_KEYS),
     )
 
 
@@ -474,10 +461,10 @@ def _deal(cls: type[DealEvent], channel: str, c: Mapping[str, Any], path: Path) 
     return cls(
         channel=channel,
         deal_id=_required(c, "deal_id", path),
-        action=MarketDealActionType(action),
+        action=DealAction(action),
         product_name=_optional(c, "market_product_name", path),
         steam_id=_optional(c, "deal_steam_id", path),
-        extra=_extra(c, _DEAL_KEYS),
+        extra=unmapped(c, _DEAL_KEYS),
     )
 
 
@@ -501,7 +488,7 @@ def _required(c: Mapping[str, Any], key: str, path: Path) -> str:
 def _optional_id(c: Mapping[str, Any], key: str, path: Path) -> str | None:
     """A 64-bit id as a digit string, never converted to a number."""
     value = _optional(c, key, path)
-    if value is not None and _DIGITS.fullmatch(value) is None:
+    if value is not None and DIGITS.fullmatch(value) is None:
         raise DecodeError("not an integer", (*path, key))
     return value
 
@@ -529,11 +516,11 @@ def _delivery_type(c: Mapping[str, Any], path: Path) -> DeliveryType | None:
 
 def _delivery_promise(c: Mapping[str, Any], path: Path) -> DeliveryPromise | None:
     value = _optional(c, "delivery_promise", path)
-    return None if value is None else DeliveryPromise(_PROMISES.get(value, value))
+    return None if value is None else delivery_promise(value)
 
 
-def _list(c: Mapping[str, Any], key: str, path: Path) -> list[dict[str, Any]] | None:
-    """A list of non-empty objects; None when the key is missing or null."""
+def _list(c: Mapping[str, Any], key: str, path: Path) -> tuple[dict[str, Any], ...] | None:
+    """A tuple of non-empty objects; None when the key is missing or null."""
     value = c.get(key)
     if value is None:
         return None
@@ -543,4 +530,4 @@ def _list(c: Mapping[str, Any], key: str, path: Path) -> list[dict[str, Any]] | 
     for index, item in enumerate(items):
         if not isinstance(item, dict) or not item:
             raise DecodeError("not an object", (*path, key, index))
-    return cast("list[dict[str, Any]]", items)
+    return tuple(cast("list[dict[str, Any]]", items))

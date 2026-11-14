@@ -44,9 +44,11 @@ and is never retried. Why it matters [observed, tests/unit/transport/test_loopba
 `follow_redirects=True` carries `X-partner-token` to the other host (httpx strips `Authorization` across origins but
 not custom headers). Tests use two real loopback servers; the second receives nothing for query, mutation and
 `auth_token`, and the control test shows it would receive `X-partner-token` from a following client. An injected client
-is used as is (owner decision): one INFO log notice says the SDK cannot set its timeouts and redirect policy; the caller
-must not let it follow redirects. (Open for the owner: sending `follow_redirects=False` per request would harden
-injected clients too, at the price of not using them "as is".)
+keeps its own timeouts and is never closed, but is no longer "used as is" (round 3, adversarial finding): every SDK
+request (GraphQL query, mutation and auth, export GET, SSE GET) is sent with `follow_redirects=False` and `auth=None`,
+and an export request carries none of the client's default headers or cookies. One INFO log notice says the SDK cannot
+set the timeouts of an injected client. The control test that showed `X-partner-token` reaching the other host through a
+following client now asserts the opposite.
 
 ### 4. Mutations are never resent by the library
 

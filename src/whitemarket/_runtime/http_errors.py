@@ -1,5 +1,8 @@
 """The error for a non-2xx status (SDK_SPEC 1.5, WHITEMARKET_API 2)."""
 
+from typing import Final
+
+from whitemarket._runtime.retry_after import RETRY_AFTER_STATUSES
 from whitemarket.errors.http import (
     AuthenticationError,
     BadRequestError,
@@ -8,30 +11,29 @@ from whitemarket.errors.http import (
     ServerError,
     ServiceUnavailableError,
 )
-from whitemarket.retry import RETRY_AFTER_STATUSES
 
-_BAD_REQUEST = 400
-_UNAUTHORIZED = 401
-_TOO_MANY_REQUESTS = 429
-_UNAVAILABLE = 503
-_SERVER_ERRORS = range(500, 600)
+BAD_REQUEST: Final = 400
+UNAUTHORIZED: Final = 401
+TOO_MANY_REQUESTS: Final = 429
+UNAVAILABLE: Final = 503
+SERVER_ERRORS: Final = range(500, 600)
 
 
-def http_error_for(status: int, body: bytes, retry_after: float | None = None) -> HttpError:
+def http_error_for(status: int, body: bytes = b"", retry_after: float | None = None) -> HttpError:
     """The error class of `status`; `retry_after` is kept for 429 and 503 only.
 
     A 3xx (redirects are never followed) and any other status is a plain `HttpError`.
     """
     if status not in RETRY_AFTER_STATUSES:
         retry_after = None
-    if status == _BAD_REQUEST:
+    if status == BAD_REQUEST:
         return BadRequestError(body)
-    if status == _UNAUTHORIZED:
+    if status == UNAUTHORIZED:
         return AuthenticationError(body)
-    if status == _TOO_MANY_REQUESTS:
+    if status == TOO_MANY_REQUESTS:
         return RateLimitError(body, retry_after=retry_after)
-    if status == _UNAVAILABLE:
+    if status == UNAVAILABLE:
         return ServiceUnavailableError(body, retry_after=retry_after)
-    if status in _SERVER_ERRORS:
+    if status in SERVER_ERRORS:
         return ServerError(body, status=status)
     return HttpError(status, body)

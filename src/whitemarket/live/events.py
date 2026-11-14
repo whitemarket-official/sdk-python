@@ -13,8 +13,7 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
 
-from whitemarket._generated.enums import MarketDealActionType
-from whitemarket.models.enums import DeliveryPromise, DeliveryType
+from whitemarket.models.enums import DealAction, DeliveryPromise, DeliveryType
 from whitemarket.models.money import Money
 
 
@@ -22,8 +21,11 @@ def _no_extra() -> Mapping[str, Any]:
     return MappingProxyType({})
 
 
-def _no_items() -> list[dict[str, Any]]:
-    return []
+_Items = tuple[dict[str, Any], ...]
+
+
+def _no_items() -> _Items:
+    return ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -40,7 +42,8 @@ class ProductAdded(LiveEvent):
     `app_id`, `asset_id`, `class_id` and `instance_id` are digit strings (`app_id` is Steam's
     `"730"`). `price` is USD. `inspect_link`, `float`, `paint_index` and `paint_seed` are None where
     the server sends them blank (a later `ProductEdited` brings them). `stickers` and `keychains`
-    are the raw decoded lists (empty when absent). `extra` holds the unmapped keys of the message.
+    are the raw decoded items as tuples (empty when absent). `extra` holds the unmapped keys of the
+    message.
     """
 
     id: str
@@ -56,8 +59,8 @@ class ProductAdded(LiveEvent):
     float: Decimal | None = None
     paint_index: str | None = None
     paint_seed: str | None = None
-    stickers: list[dict[str, Any]] = field(default_factory=_no_items, hash=False)
-    keychains: list[dict[str, Any]] = field(default_factory=_no_items, hash=False)
+    stickers: _Items = field(default_factory=_no_items, hash=False)
+    keychains: _Items = field(default_factory=_no_items, hash=False)
     extra: Mapping[str, Any] = field(default_factory=_no_extra, hash=False)
 
 
@@ -82,8 +85,8 @@ class ProductEdited(LiveEvent):
     float: Decimal | None = None
     paint_index: str | None = None
     paint_seed: str | None = None
-    stickers: list[dict[str, Any]] | None = field(default=None, hash=False)
-    keychains: list[dict[str, Any]] | None = field(default=None, hash=False)
+    stickers: _Items | None = field(default=None, hash=False)
+    keychains: _Items | None = field(default=None, hash=False)
     extra: Mapping[str, Any] = field(default_factory=_no_extra, hash=False)
 
 
@@ -112,7 +115,7 @@ class DealEvent(LiveEvent):
     """
 
     deal_id: str
-    action: MarketDealActionType
+    action: DealAction
     product_name: str | None = None
     steam_id: str | None = field(default=None, repr=False)
     extra: Mapping[str, Any] = field(default_factory=_no_extra, hash=False)
@@ -166,11 +169,11 @@ class UnknownEvent(LiveEvent):
 
     `type` is None when the message has none. `raw_content` is the decoded `content` (the whole
     decoded message when there is no `content` object), or the raw string when the message is not
-    JSON.
+    JSON. It is hidden from `repr`: a deal message holds the counterparty's Steam id.
     """
 
     type: str | None
-    raw_content: dict[str, Any] | list[Any] | str = field(hash=False)
+    raw_content: dict[str, Any] | list[Any] | str = field(hash=False, repr=False)
 
 
 __all__ = [

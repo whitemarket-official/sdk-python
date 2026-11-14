@@ -35,7 +35,7 @@ def _finite(value: Decimal) -> Decimal:
     return value
 
 
-def decode(body: str | bytes) -> Any:
+def decode(body: str | bytes | bytearray) -> Any:
     """Parse JSON text: fractions and exponents become `Decimal`, integers stay exact ints."""
     return json.loads(body, parse_float=Decimal, parse_constant=_refuse_constant)
 

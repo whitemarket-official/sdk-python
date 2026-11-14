@@ -29,9 +29,7 @@ class Registry:
         """Handle the events of the personal channel (`#<personId>`). No subscribe is sent: the
         server subscribes it on connect. Channels are recognised by the leading `#`."""
         if handler is not None:
-            self._handlers.add_event(
-                handler, lambda channel: channel.startswith(policy.PERSONAL_PREFIX)
-            )
+            self._handlers.add_event(handler, policy.is_personal)
 
     def on(self, event_type: type[_E], handler: Callable[[_E], Any]) -> None:
         """`handler` gets every event that is an instance of `event_type` (any channel)."""
