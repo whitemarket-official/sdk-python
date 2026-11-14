@@ -1,29 +1,25 @@
 """Mappers of the deal models: `Deal` (in progress and archived) and `DealState`."""
 
-from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
 from whitemarket._mappers.common import (
-    ConnectionSource,
     MoneySource,
     Path,
     convert_enum,
-    map_page,
     money,
     optional_enum,
     optional_money,
+    optional_secret,
 )
 from whitemarket._mappers.products import (
     ProductHistorySource,
     map_inventory_item,
     map_product_history,
 )
-from whitemarket._runtime.secret import Secret
 from whitemarket.models.deal_status import DealStatus
 from whitemarket.models.deals import Deal, DealState
 from whitemarket.models.enums import DealCancelReason, DeliveryType
-from whitemarket.models.page import Page
 
 
 class DealStateSource(Protocol):
@@ -155,7 +151,6 @@ def deal_state_of(deal: Deal) -> DealState:
 
 def map_deal(source: DealSource, path: Path) -> Deal:
     """A deal in progress. A null or empty `receiver_trade_url` is no URL (SDK_SPEC 3.4 rule 11)."""
-    url = source.receiver_trade_url
     return Deal(
         id=source.id,
         custom_id=source.custom_id,
@@ -176,7 +171,7 @@ def map_deal(source: DealSource, path: Path) -> Deal:
         reverse_refund=None,
         product=map_product_history(source.product, (*path, "product")),
         item=map_inventory_item(source.item, None, (*path, "item")),
-        receiver_trade_url=Secret(url) if url else None,
+        receiver_trade_url=optional_secret(source.receiver_trade_url),
     )
 
 
@@ -204,15 +199,3 @@ def map_archived_deal(source: ArchivedDealSource, path: Path) -> Deal:
         product=map_product_history(source.product, (*path, "product")),
         item=None,
     )
-
-
-def map_deals(sources: Sequence[DealSource], path: Path) -> list[Deal]:
-    """The deals in progress of a list answer (`deal_buyer_list`, `deal_seller_list`)."""
-    return [map_deal(source, (*path, index)) for index, source in enumerate(sources)]
-
-
-def map_archived_deal_page(
-    connection: ConnectionSource[ArchivedDealSource], path: Path
-) -> Page[Deal]:
-    """A page of the deal history (`deal_history`)."""
-    return map_page(connection, map_archived_deal, path)

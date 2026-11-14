@@ -11,24 +11,25 @@ answer) is a `MutationOutcomeUnknownError`: the money may have moved, so check b
 again.
 """
 
-import unicodedata
 from collections.abc import Iterator
+from functools import partial
 from typing import Final
 
 from whitemarket._generated.input_types import WalletTransactionSearchInput
 from whitemarket._generated.sync_client import GeneratedClient
-from whitemarket._mappers.common import map_page, money
+from whitemarket._mappers.common import map_list, map_page, money
+from whitemarket._mappers.search import search_argument, wallet_transaction_search_input
 from whitemarket._mappers.wallet import (
     map_credit,
     map_debt,
     map_deposit,
-    map_wallet_transaction_page,
+    map_wallet_transaction,
     map_wallet_transfer,
     map_withdrawal,
 )
 from whitemarket._mappers.wire import wire_enum, wire_money
 from whitemarket._runtime.rejection import is_mutation_rejection
-from whitemarket._runtime.unset import UNSET
+from whitemarket._runtime.text_args import require_text
 from whitemarket._sync.pagination import forward_pagination, iterate_pages
 from whitemarket.errors import MutationOutcomeUnknownError
 from whitemarket.models.enums import Currency
@@ -71,26 +72,17 @@ class WalletApi:
     def balances(self) -> list[Money]:
         """The balances in every currency (`wallet_balances`)."""
         answer = self._generated.wallet_balances()
-        return [
-            money(row, ("wallet_balances", index))
-            for index, row in enumerate(answer.wallet_balances)
-        ]
+        return map_list(answer.wallet_balances, money, ("wallet_balances",))
 
     def deposits(self) -> list[Deposit]:
         """The deposits (`wallet_deposits`). `Deposit.airwallex_secret` is a `Secret`."""
         answer = self._generated.wallet_deposits()
-        return [
-            map_deposit(row, ("wallet_deposits", index))
-            for index, row in enumerate(answer.wallet_deposits)
-        ]
+        return map_list(answer.wallet_deposits, map_deposit, ("wallet_deposits",))
 
     def withdrawals(self) -> list[Withdrawal]:
         """The withdrawals (`wallet_withdrawals`)."""
         answer = self._generated.wallet_withdrawals()
-        return [
-            map_withdrawal(row, ("wallet_withdrawals", index))
-            for index, row in enumerate(answer.wallet_withdrawals)
-        ]
+        return map_list(answer.wallet_withdrawals, map_withdrawal, ("wallet_withdrawals",))
 
     def transactions(
         self,
@@ -106,11 +98,11 @@ class WalletApi:
         """
         answer = self._generated.wallet_transactions(
             forward_pagination=forward_pagination(page),
-            search=filter.to_input()
-            if isinstance(filter, WalletTransactionFilter)
-            else filter or UNSET,
+            search=search_argument(
+                filter, WalletTransactionSearchInput, wallet_transaction_search_input
+            ),
         )
-        return map_wallet_transaction_page(answer.wallet_transactions, _TRANSACTIONS)
+        return map_page(answer.wallet_transactions, map_wallet_transaction, _TRANSACTIONS)
 
     def iterate_transactions(
         self,
@@ -123,11 +115,7 @@ class WalletApi:
         the failing page, and `DecodeError` when the server reports a next page without a new
         cursor.
         """
-
-        def fetch(after: str | None) -> Page[WalletTransaction]:
-            return self.transactions(filter, PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, _TRANSACTIONS)
+        return iterate_pages(partial(self.transactions, filter), page_size, _TRANSACTIONS)
 
     def transfers(self, page: PageRequest | None = None) -> Page[WalletTransfer]:
         """One page of transfers between partners (`wallet_transfers`)."""
@@ -136,11 +124,7 @@ class WalletApi:
 
     def iterate_transfers(self, page_size: int | None = None) -> Iterator[WalletTransfer]:
         """Every transfer, page after page, lazily (see `iterate_transactions()`)."""
-
-        def fetch(after: str | None) -> Page[WalletTransfer]:
-            return self.transfers(PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, _TRANSFERS)
+        return iterate_pages(self.transfers, page_size, _TRANSFERS)
 
     def credit(self) -> Credit:
         """The credit line: the most that may be owed, what is owed and what is still available.
@@ -178,7 +162,7 @@ class WalletApi:
         `MutationOutcomeUnknownError`: the money may have moved, so check `transfers()` before
         sending again.
         """
-        _require_recipient(to)
+        require_text(to, "the recipient", non_empty=True, no_control=True)
         wire = wire_money(amount)
         try:
             answer = self._generated.wallet_transfer_send(wire, to)
@@ -187,14 +171,3 @@ class WalletApi:
             if is_mutation_rejection(error, "wallet_transfer_send"):
                 raise
             raise MutationOutcomeUnknownError("wallet.transfer", "wallet.transfers()") from error
-
-
-def _require_recipient(to: str) -> None:
-    try:
-        to.encode("utf-8")
-    except UnicodeEncodeError:
-        raise ValueError("the recipient must be valid UTF-8") from None
-    if not to or any(unicodedata.category(c) == "Cc" for c in to):
-        raise ValueError(
-            "the recipient must be a non-empty person id or Steam id without control characters"
-        )

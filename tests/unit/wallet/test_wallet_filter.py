@@ -6,6 +6,10 @@ from typing import Any
 
 import pytest
 
+from whitemarket._mappers.search import (
+    wallet_transaction_search_input,
+    wallet_transaction_sort_input,
+)
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket.models import Currency, SortDirection, TransactionReason
 from whitemarket.models.account_enums import (
@@ -19,7 +23,7 @@ NAIVE = datetime(2026, 10, 1, tzinfo=UTC).replace(tzinfo=None)
 
 
 def wire(flt: WalletTransactionFilter) -> Any:
-    return to_plain(flt.to_input())
+    return to_plain(wallet_transaction_search_input(flt))
 
 
 def test_an_empty_filter_sends_nothing() -> None:
@@ -64,7 +68,7 @@ def test_every_condition_is_encoded_under_its_wire_name() -> None:
 def test_the_sort_direction_defaults_to_ascending() -> None:
     sort = WalletTransactionSort(field=TransactionSortField.CREATED_AT)
 
-    assert to_plain(sort.to_input()) == {"field": "CREATED_AT", "type": "ASC"}
+    assert to_plain(wallet_transaction_sort_input(sort)) == {"field": "CREATED_AT", "type": "ASC"}
 
 
 def test_a_false_boolean_is_sent_not_dropped() -> None:
@@ -90,4 +94,4 @@ def test_a_reason_the_schema_does_not_accept_is_refused_when_encoded() -> None:
     flt = WalletTransactionFilter(reason=TransactionReason("TELEPORT"))
 
     with pytest.raises(ValueError, match="TELEPORT"):
-        flt.to_input()
+        wallet_transaction_search_input(flt)

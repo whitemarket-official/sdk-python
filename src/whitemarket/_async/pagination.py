@@ -14,14 +14,18 @@ _T_co = TypeVar("_T_co", covariant=True)
 _T = TypeVar("_T")
 
 
-class AsyncPageFetcher(Protocol[_T_co]):
-    """Fetches the page after a cursor (`None`: the first page)."""
+class AsyncPageRequester(Protocol[_T_co]):
+    """Requests the page a `PageRequest` names (a size and a cursor)."""
 
-    async def __call__(self, after: str | None, /) -> Page[_T_co]: ...
+    async def __call__(self, page: PageRequest, /) -> Page[_T_co]: ...
 
 
-async def iterate_pages(fetch_page: AsyncPageFetcher[_T], path: Path) -> AsyncIterator[_T]:
+async def iterate_pages(
+    request_page: AsyncPageRequester[_T], page_size: int | None, path: Path
+) -> AsyncIterator[_T]:
     """The items of every page, requesting the next page only after the previous one is consumed.
+
+    `page_size` is the items per request (the server's default when None).
 
     Stops on `has_next_page` false. A page that reports a next page but no new cursor (none, or the
     one just used) is a `DecodeError` at `<path>.pageInfo.endCursor`, so a broken server cannot
@@ -29,7 +33,7 @@ async def iterate_pages(fetch_page: AsyncPageFetcher[_T], path: Path) -> AsyncIt
     """
     cursor: str | None = None
     while True:
-        page = await fetch_page(cursor)
+        page = await request_page(PageRequest(first=page_size, after=cursor))
         for item in page.items:
             yield item
         if not page.has_next_page:

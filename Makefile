@@ -151,6 +151,27 @@ example: ## Run an example against the real API: make example NAME=ws_products_f
 	@test -n "$(NAME)" || { echo "usage: make example NAME=<file in examples/ without .py>"; exit 2; }
 	$(PY) examples/$(NAME).py
 
+## --- live smoke ---------------------------------------------------------------
+
+.PHONY: live-smoke
+live-smoke: ## Read-only calls against the real API (SDK_SPEC 6.4), needs WHITEMARKET_PARTNER_TOKEN; writes var/live-smoke/report.md; not part of check
+	PYTHONPATH=tools $(PY) -m live_smoke
+
+## --- repository hygiene -------------------------------------------------------
+
+# Images pinned by tag and digest (digests checked with `docker pull` + `docker inspect`, 2026-11-14).
+GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+ACTIONLINT_IMAGE := rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+.PHONY: secrets-scan
+secrets-scan: ## gitleaks over the working tree (findings redacted)
+	@$(QC) secrets-scan docker run --rm -v "$(CURDIR)":/repo $(GITLEAKS_IMAGE) dir /repo --redact --no-banner \
+		--config /repo/.gitleaks.toml
+
+.PHONY: actionlint
+actionlint: ## Lint GitHub Actions workflows
+	@$(QC) actionlint docker run --rm -v "$(CURDIR)":/repo -w /repo $(ACTIONLINT_IMAGE) -no-color
+
 ## --- agent tooling ------------------------------------------------------------
 
 .PHONY: hooks-test

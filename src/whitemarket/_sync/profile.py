@@ -12,8 +12,6 @@ The Steam proxy URL and the Steam token payload are secrets: they are taken and 
 bodies). The email, the confirmation code and the referrer code are plain strings.
 """
 
-from typing import TypeVar
-
 from whitemarket._generated.input_types import (
     PersonEmailInput,
     ProxyInput,
@@ -25,15 +23,9 @@ from whitemarket._generated.sync_client import GeneratedClient
 from whitemarket._mappers.profile import map_profile
 from whitemarket._mappers.wire import present
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.unset import UNSET, UnsetType
+from whitemarket._runtime.text_args import require_text
+from whitemarket._runtime.unset import unset_if_none
 from whitemarket.models.profile import Profile
-
-_T = TypeVar("_T")
-
-
-def _optional(value: _T | None) -> _T | UnsetType:
-    """A value left out of the request when it is None (a `0` is a value and is sent)."""
-    return UNSET if value is None else value
 
 
 def _require_secret(name: str, value: object) -> Secret:
@@ -59,7 +51,9 @@ class ProfileApi:
 
     def set_trade_url(self, url: str) -> bool:
         """Set the Steam trade URL (`profile_steam_link`); returns the server's answer."""
-        return (self._generated.profile_steam_link(SteamLinkInput(value=url))).profile_steam_link
+        return (
+            self._generated.profile_steam_link(SteamLinkInput(value=require_text(url, "url")))
+        ).profile_steam_link
 
     def steam_proxy(self) -> Secret | None:
         """The Steam proxy URL with its credentials (`profile_steam_proxy_get`); `None` when none
@@ -76,7 +70,7 @@ class ProfileApi:
         """
         secret = _require_secret("proxy", proxy)
         answer = self._generated.profile_steam_proxy_set(
-            ProxyInput(value=secret.reveal()), _optional(ttl)
+            ProxyInput(value=secret.reveal()), unset_if_none(ttl)
         )
         return answer.profile_steam_proxy_set
 
@@ -95,7 +89,7 @@ class ProfileApi:
         """
         secret = _require_secret("payload", payload)
         answer = self._generated.profile_token_set(
-            secret.reveal(), own_proxy_required, _optional(ttl)
+            secret.reveal(), own_proxy_required, unset_if_none(ttl)
         )
         return answer.profile_token_set
 
@@ -110,12 +104,14 @@ class ProfileApi:
 
     def set_email(self, email: str) -> Profile:
         """Set the email (`email_set`); the server sends a confirmation code to it."""
-        answer = (self._generated.email_set(PersonEmailInput(value=email))).email_set
+        answer = (
+            self._generated.email_set(PersonEmailInput(value=require_text(email, "email")))
+        ).email_set
         return map_profile(answer, answer.trading_competition_stat)
 
     def confirm_email(self, code: str, sign: str | None = None) -> Profile:
         """Confirm the email with the code from the message (`email_confirm`)."""
-        answer = (self._generated.email_confirm(code, _optional(sign))).email_confirm
+        answer = (self._generated.email_confirm(code, unset_if_none(sign))).email_confirm
         return map_profile(answer, answer.trading_competition_stat)
 
     def resend_email_confirmation(self) -> Profile:

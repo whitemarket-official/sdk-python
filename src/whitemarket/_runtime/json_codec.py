@@ -12,6 +12,11 @@ from pydantic import BaseModel
 from whitemarket._runtime.unset import UnsetType
 
 
+class RequestNotSentError(ValueError, TypeError):
+    """A request value cannot be encoded, so nothing was sent and no mutation can have run. Both a
+    `ValueError` and a `TypeError`: it replaces either, whichever the encoder raised."""
+
+
 def _refuse_constant(name: str) -> object:
     raise ValueError(f"non-finite number {name} in JSON")
 
@@ -70,6 +75,17 @@ def to_plain(value: object) -> object:
     else:
         raise TypeError(f"cannot encode {type(value).__name__} in a request")
     return result
+
+
+def to_request_plain(value: object) -> object:
+    """`to_plain` for request variables: a refusal is a `RequestNotSentError`. Raised outside the
+    handler, so no `__context__` keeps a value that may be a secret."""
+    failure = ""
+    try:
+        return to_plain(value)
+    except (TypeError, ValueError) as error:
+        failure = str(error)
+    raise RequestNotSentError(failure)
 
 
 def encode(value: object) -> str:

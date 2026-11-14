@@ -5,13 +5,14 @@ from typing import Any
 
 import pytest
 
+from whitemarket._mappers.search import store_input
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket.models.account_enums import StoreAvatar, StoreBanner
 from whitemarket.store import StoreSettings
 
 
 def wire(settings: StoreSettings) -> Any:
-    return to_plain(settings.to_input())
+    return to_plain(store_input(settings))
 
 
 @pytest.mark.parametrize(
@@ -103,4 +104,4 @@ def test_the_settings_are_immutable() -> None:
 
 def test_a_banner_the_schema_does_not_accept_is_refused() -> None:
     with pytest.raises(ValueError, match="BANNER_99"):
-        StoreSettings(banner=StoreBanner("BANNER_99")).to_input()
+        store_input(StoreSettings(banner=StoreBanner("BANNER_99")))

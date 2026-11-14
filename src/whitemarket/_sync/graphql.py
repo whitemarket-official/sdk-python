@@ -6,6 +6,7 @@ from typing import Any, Final, cast
 
 from whitemarket._runtime import json_codec
 from whitemarket._runtime.body import BodyBytes
+from whitemarket._runtime.json_codec import RequestNotSentError
 from whitemarket._runtime.operation import OperationType, effective_operation_type
 from whitemarket._sync.credentials import Credentials
 from whitemarket._sync.transport import GraphQLTransport
@@ -60,17 +61,21 @@ class GraphQLExecutor:
 
 
 def _encode(document: str, operation_name: str | None, variables: Mapping[str, object]) -> bytes:
+    """The request body. A value that cannot be encoded is a `RequestNotSentError`: nothing has
+    been sent yet, so a mutation caller can tell it from an ambiguous failure."""
     payload: dict[str, object] = {"query": document}
     if operation_name:
         payload["operationName"] = operation_name
     payload["variables"] = dict(variables)
-    text = json_codec.encode(payload)
+    failure = ""
     try:
-        return text.encode("utf-8")
+        return json_codec.encode(payload).encode("utf-8")
     except UnicodeEncodeError:
-        pass
-    # Raised outside the handler: no __context__ keeps the text, which may hold a secret.
-    raise ValueError("the request holds text that is not valid Unicode")
+        failure = "the request holds text that is not valid Unicode"
+    except (TypeError, ValueError) as error:
+        failure = str(error)
+    # Raised outside the handlers: no __context__ keeps the text, which may hold a secret.
+    raise RequestNotSentError(failure)
 
 
 def _decode_body(body: BodyBytes) -> object:

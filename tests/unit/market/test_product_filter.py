@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from whitemarket._mappers.wire import product_search_input, product_sort_input
+from whitemarket._mappers.search import product_search_input, product_sort_input
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket.market import ProductFilter, ProductSort
 from whitemarket.models import (

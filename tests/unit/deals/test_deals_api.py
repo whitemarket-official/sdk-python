@@ -35,6 +35,7 @@ from whitemarket._generated.deal_request_cancel import DealRequestCancelDealRequ
 from whitemarket._generated.deal_seller_list import DealSellerListDealSellerList
 from whitemarket._generated.deal_steam_offer_sent import DealSteamOfferSentDealSteamOfferSent
 from whitemarket._generated.input_types import MarkerDealHistorySearchInput
+from whitemarket._mappers.search import deal_history_search_input
 from whitemarket.deals import DealHistoryFilter, DealHistorySort
 from whitemarket.errors import (
     DecodeError,
@@ -599,7 +600,9 @@ def test_the_history_filter_encodes_every_field_it_has() -> None:
         pattern=661,
     )
 
-    wire = filter.to_input().model_dump(by_alias=True, exclude_none=True, mode="json")
+    wire = deal_history_search_input(filter).model_dump(
+        by_alias=True, exclude_none=True, mode="json"
+    )
 
     assert wire == {
         "action": "SELL",
@@ -623,7 +626,10 @@ def test_the_history_filter_refuses_what_it_cannot_send() -> None:
         DealHistoryFilter(created_to=NAIVE)
     with pytest.raises(ValueError, match="EUR"):
         DealHistoryFilter(price_from=Money(amount=Decimal(1), currency=Currency("EUR")))
-    assert DealHistoryFilter(float_from=Decimal("0.0700")).to_input().csgo_float_from == "0.0700"
+    assert (
+        deal_history_search_input(DealHistoryFilter(float_from=Decimal("0.0700"))).csgo_float_from
+        == "0.0700"
+    )
 
 
 # ---- requestCancel ---------------------------------------------------------------------------

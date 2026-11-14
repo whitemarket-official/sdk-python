@@ -10,7 +10,6 @@ from whitemarket._generated.fragments import MoneyFields, PersonPublicFields
 from whitemarket._generated.wallet_credit_get import WalletCreditGetWalletCreditGet
 from whitemarket._generated.wallet_deposits import WalletDepositsWalletDeposits
 from whitemarket._generated.wallet_transactions import (
-    WalletTransactionsWalletTransactions,
     WalletTransactionsWalletTransactionsEdgesNode,
 )
 from whitemarket._generated.wallet_withdrawals import WalletWithdrawalsWalletWithdrawals
@@ -18,7 +17,6 @@ from whitemarket._mappers.common import (
     MoneySource,
     Path,
     convert_enum,
-    map_page,
     money,
     optional_enum,
     optional_money,
@@ -37,7 +35,6 @@ from whitemarket.models.account_enums import (
 )
 from whitemarket.models.enums import DealAction, TransactionReason
 from whitemarket.models.money import Money
-from whitemarket.models.page import Page
 from whitemarket.models.wallet import (
     Credit,
     Debt,
@@ -136,12 +133,6 @@ def map_wallet_transaction(
         if source.counterparty is None
         else map_person_summary(source.counterparty),
     )
-
-
-def map_wallet_transaction_page(
-    connection: WalletTransactionsWalletTransactions, path: Path
-) -> Page[WalletTransaction]:
-    return map_page(connection, map_wallet_transaction, path)
 
 
 def map_wallet_transfer(source: TransferSource, path: Path) -> WalletTransfer:

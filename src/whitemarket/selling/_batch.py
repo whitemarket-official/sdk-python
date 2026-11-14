@@ -5,14 +5,13 @@ from collections.abc import Callable, Sequence
 from typing import Protocol, TypeVar
 
 from whitemarket._generated.input_types import MarketProductEditInput, MarketProductNewInput
-from whitemarket._mappers.products import map_batch_product
+from whitemarket._mappers.products import BatchIdentity, batch_identity, map_batch_product
 from whitemarket.errors import DecodeError
-from whitemarket.models.products import Product, ProductHistory
 from whitemarket.selling.results import BatchItemResult, BatchOutcome
 
 _T = TypeVar("_T")
 
-SameItem = Callable[[_T, Product | ProductHistory], bool]
+SameItem = Callable[[_T, BatchIdentity], bool]
 
 
 class BatchRow(Protocol):
@@ -53,7 +52,8 @@ def match_rows(
     A row whose product carries the identity of an item is also checked against the item requested
     at that position (`same_item`; a row without a product, or a product without the identity,
     passes): `index` is unconfirmed, and a server counting from 1 that answers only some rows
-    would otherwise attach rows to the wrong items.
+    would otherwise attach rows to the wrong items. The identity is read from the raw row before
+    any money or wear is decoded, so a product that cannot be decoded is still checked.
 
     Raises `DecodeError` when an `index` is outside the chunk or repeated, or a row's product is
     not the requested item: the mutation already ran, so the caller marks the chunk `UNKNOWN`.
@@ -67,11 +67,12 @@ def match_rows(
             results.append(BatchItemResult(index=index, outcome=BatchOutcome.UNKNOWN))
             continue
         path = (field, position)
-        product = map_batch_product(row.product, (*path, "product"))
-        if product is not None and not same_item(item, product):
+        identity = batch_identity(row.product)
+        if identity is not None and not same_item(item, identity):
             raise DecodeError(
                 "the product is not the item requested at this position", (*path, "product", "id")
             )
+        product = map_batch_product(row.product, (*path, "product"))
         results.append(
             BatchItemResult(
                 index=index,
@@ -99,23 +100,21 @@ def same_uuid(requested: str | None, returned: str) -> bool:
     return requested is not None and requested.lower() == returned.lower()
 
 
-def same_listed_item(requested: MarketProductNewInput, product: Product | ProductHistory) -> bool:
-    if not isinstance(product, Product) or product.item is None:
+def same_listed_item(requested: MarketProductNewInput, product: BatchIdentity) -> bool:
+    if product.archived or product.asset_id is None or product.item_id is None:
         return True
     if requested.asset_id is not None:
-        return product.item.asset_id == requested.asset_id
-    return same_uuid(requested.inventory_id, product.item.id)
+        return product.asset_id == requested.asset_id
+    return same_uuid(requested.inventory_id, product.item_id)
 
 
-def same_repriced_listing(
-    requested: MarketProductEditInput, product: Product | ProductHistory
-) -> bool:
-    if not isinstance(product, Product):
+def same_repriced_listing(requested: MarketProductEditInput, product: BatchIdentity) -> bool:
+    if product.archived:
         return True
     if requested.product_id is not None:
-        return same_uuid(requested.product_id, product.id)
-    return product.item is None or product.item.asset_id == requested.asset_id
+        return same_uuid(requested.product_id, product.listing_id)
+    return product.asset_id is None or product.asset_id == requested.asset_id
 
 
-def same_removed_listing(requested: str, product: Product | ProductHistory) -> bool:
-    return not isinstance(product, ProductHistory) or same_uuid(requested, product.id)
+def same_removed_listing(requested: str, product: BatchIdentity) -> bool:
+    return not product.archived or same_uuid(requested, product.listing_id)

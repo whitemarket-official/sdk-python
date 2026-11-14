@@ -1,12 +1,14 @@
 """Whether a failure of a mutation means the server did not run it (CLAUDE.md rule 2, SDK_SPEC 3.3).
 
-A mutation is never resent, so the caller must know whether it may have happened. A malformed
+A mutation is never resent, so the caller must know whether it may have happened. A request that
+could not be encoded (nothing was sent), a malformed
 request (400), a rejected credential (401 after the one refresh and replay) and a rate limit (429)
 are rejections; so is a GraphQL error that can only have come from the root field itself. Every
 other failure (a timeout, a 5xx, an unreadable answer, an unexpected exception) may have happened
 after the mutation ran.
 """
 
+from whitemarket._runtime.json_codec import RequestNotSentError
 from whitemarket.errors.graphql import GraphQLError
 from whitemarket.errors.http import AuthenticationError, BadRequestError, RateLimitError
 
@@ -23,7 +25,9 @@ def is_mutation_rejection(error: BaseException, field: str) -> bool:
     "no path"). Residual: a root-path error raised after the effect was committed still reads as a
     rejection (needs the backend's category catalogue).
     """
-    if isinstance(error, BadRequestError | AuthenticationError | RateLimitError):
+    if isinstance(
+        error, BadRequestError | AuthenticationError | RateLimitError | RequestNotSentError
+    ):
         return True
     if not isinstance(error, GraphQLError) or not error.errors:
         return False
@@ -43,7 +47,9 @@ def is_batch_rejection(error: BaseException) -> bool:
     October 2021, 7.1.2) and every error has no path. HTTP 400, 401 (after the one refresh and
     replay) and 429 are rejections as for a single mutation.
     """
-    if isinstance(error, BadRequestError | AuthenticationError | RateLimitError):
+    if isinstance(
+        error, BadRequestError | AuthenticationError | RateLimitError | RequestNotSentError
+    ):
         return True
     if not isinstance(error, GraphQLError) or not error.errors or error.data_present:
         return False

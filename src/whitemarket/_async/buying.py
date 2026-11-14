@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
+from whitemarket._async.deal_lookup import find_archived_deal, find_live_deal
 from whitemarket._async.seams import AsyncSleeper
 from whitemarket._concurrency import async_sleep
 from whitemarket._generated.client import AsyncGeneratedClient
@@ -20,11 +21,12 @@ from whitemarket._generated.input_types import (
     MoneyInput,
     SteamLinkInput,
 )
-from whitemarket._mappers.deals import map_archived_deal, map_deal
+from whitemarket._mappers.deals import map_deal
 from whitemarket._mappers.wire import present, wire_enum, wire_money
 from whitemarket._runtime.rejection import is_mutation_rejection
 from whitemarket._runtime.secret import Secret
-from whitemarket._runtime.unset import UNSET, UnsetType
+from whitemarket._runtime.text_args import require_text
+from whitemarket._runtime.unset import UNSET, UnsetType, unset_if_none
 from whitemarket.config import BuyReconciliation
 from whitemarket.errors import DecodeError, NotFoundError, PurchaseOutcomeUnknownError
 from whitemarket.models.deals import BuyResult, Deal
@@ -99,7 +101,7 @@ class AsyncBuyingApi:
         Sent once, never retried; an ambiguous failure is reconciled (see the class documentation).
         """
         custom_id = self._custom_id(custom_id)
-        product_id = _text(product_id, "product_id")
+        product_id = require_text(product_id, "product_id")
         price = _max_price(max_price)
         link = _link(trade_url)
         return await self._buy(custom_id, price, link, id=product_id)
@@ -124,7 +126,7 @@ class AsyncBuyingApi:
         custom_id = self._custom_id(custom_id)
         target = MarketProductAppIdNameHashInput(
             app=wire_enum(SteamApp, app),
-            name_hash=_text(name_hash, "name_hash"),
+            name_hash=require_text(name_hash, "name_hash"),
             **present(phase=wire_enum(CSGOPhase, phase)),
         )
         promise = wire_enum(WireDeliveryPromise, delivery_promise)
@@ -135,7 +137,7 @@ class AsyncBuyingApi:
             price,
             link,
             app_id_name_hash_input=target,
-            delivery_promise=UNSET if promise is None else promise,
+            delivery_promise=unset_if_none(promise),
         )
 
     async def buy_by_asset_id(
@@ -156,7 +158,7 @@ class AsyncBuyingApi:
         """
         custom_id = self._custom_id(custom_id)
         target = MarketProductAppIdAssetIdInput(
-            app=wire_enum(SteamApp, app), asset_id=_text(asset_id, "asset_id")
+            app=wire_enum(SteamApp, app), asset_id=require_text(asset_id, "asset_id")
         )
         price = _max_price(max_price)
         link = _link(trade_url)
@@ -201,18 +203,17 @@ class AsyncBuyingApi:
         last_error: Exception | None = None
         for _ in range(settings.attempts):
             try:
-                found = await self._generated.deal_item(custom_id=custom_id)
-                deal = _of_the_purchase(map_deal(found.deal_item, ("deal_item",)), custom_id)
+                deal = _require_same_custom_id(
+                    await find_live_deal(self._generated, custom_id=custom_id), custom_id
+                )
                 return BuyResult(deal=deal, custom_id=custom_id, reconciled=True)
             except Exception as error:
                 # Not there yet, or the lookup failed: either way the archive is next and the
                 # outcome stays unknown. A failed lookup never turns into "no deal".
                 last_error = _more_telling(last_error, error)
             try:
-                archived = await self._generated.deal_history_item(custom_id=custom_id)
-                deal = _of_the_purchase(
-                    map_archived_deal(archived.deal_history_item, ("deal_history_item",)),
-                    custom_id,
+                deal = _require_same_custom_id(
+                    await find_archived_deal(self._generated, custom_id=custom_id), custom_id
                 )
                 return BuyResult(deal=deal, custom_id=custom_id, reconciled=True)
             except Exception as error:
@@ -227,26 +228,10 @@ class AsyncBuyingApi:
             raise TypeError("custom_id must be a str")
         if not 1 <= len(given) <= MAX_CUSTOM_ID_LENGTH:
             raise ValueError(f"custom_id must be 1 to {MAX_CUSTOM_ID_LENGTH} characters")
-        return _text(given, "custom_id")
+        return require_text(given, "custom_id")
 
 
-def _text(value: str, name: str) -> str:
-    """A string argument that can be sent: a `str` of valid Unicode. Checked before the request is
-    built, so a text the encoder would refuse never lands inside the reconciled `try` (it would
-    cost a full reconciliation for a purchase that was never sent)."""
-    if not isinstance(cast("object", value), str):
-        raise TypeError(f"{name} must be a str")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        pass
-    else:
-        return value
-    # Raised outside the handler: no __context__ keeps the text.
-    raise ValueError(f"{name} must be valid Unicode text")
-
-
-def _of_the_purchase(deal: Deal, custom_id: str) -> Deal:
+def _require_same_custom_id(deal: Deal, custom_id: str) -> Deal:
     """The deal a lookup by `custom_id` answered, if it carries that `custom_id`. Another deal (or
     one without a `custom_id`) is a failed lookup, never a reconciled purchase: handing a foreign
     deal back as "your purchase" is a money error (docs/DEVIATIONS.md, 3.3)."""
@@ -272,7 +257,7 @@ def _link(trade_url: str | Secret | None) -> SteamLinkInput | UnsetType:
     if trade_url is None:
         return UNSET
     if isinstance(trade_url, Secret):
-        return SteamLinkInput(value=_text(trade_url.reveal(), "trade_url"))
+        return SteamLinkInput(value=require_text(trade_url.reveal(), "trade_url"))
     if not isinstance(cast("object", trade_url), str):
         raise TypeError("trade_url must be a str or a Secret")
-    return SteamLinkInput(value=_text(trade_url, "trade_url"))
+    return SteamLinkInput(value=require_text(trade_url, "trade_url"))

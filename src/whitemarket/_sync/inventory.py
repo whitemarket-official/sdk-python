@@ -6,12 +6,13 @@ Listing is a query, which the transport retries on transient failures (SDK_SPEC 
 """
 
 from collections.abc import Iterator
+from functools import partial
 
 from whitemarket._generated.input_types import PersonInventorySearchInput
 from whitemarket._generated.sync_client import GeneratedClient
 from whitemarket._mappers.common import map_page
 from whitemarket._mappers.products import map_inventory_item
-from whitemarket._runtime.unset import UNSET
+from whitemarket._mappers.search import inventory_search_input, search_argument
 from whitemarket._sync.pagination import forward_pagination, iterate_pages
 from whitemarket.inventory.filter import InventoryFilter
 from whitemarket.models.page import Page, PageRequest
@@ -44,7 +45,7 @@ class InventoryApi:
         """
         answer = self._generated.inventory_my(
             forward_pagination=forward_pagination(page),
-            search=filter.to_input() if isinstance(filter, InventoryFilter) else filter or UNSET,
+            search=search_argument(filter, PersonInventorySearchInput, inventory_search_input),
         )
         return map_page(
             answer.inventory_my, lambda node, path: map_inventory_item(node, None, path), _LIST
@@ -60,11 +61,7 @@ class InventoryApi:
         None). Raises what `list()` raises, at the point of the iteration that reads the failing
         page, and `DecodeError` when the server reports a next page without a new cursor.
         """
-
-        def fetch(after: str | None) -> Page[InventoryItem]:
-            return self.list(filter, PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, _LIST)
+        return iterate_pages(partial(self.list, filter), page_size, _LIST)
 
     def refresh_from_steam(self) -> None:
         """Ask the server to reload the inventory from Steam (`inventory_update`).

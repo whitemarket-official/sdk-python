@@ -6,6 +6,7 @@ is. It sets values, so the caller may repeat it after checking the state with `g
 """
 
 from whitemarket._generated.client import AsyncGeneratedClient
+from whitemarket._mappers.search import store_input
 from whitemarket._mappers.store import map_store
 from whitemarket.models.store import Store
 from whitemarket.store.settings import StoreSettings
@@ -29,5 +30,5 @@ class AsyncStoreApi:
         Raises `ValueError`, before anything is sent, for an avatar or banner the API schema does
         not accept.
         """
-        answer = (await self._generated.store_edit(settings.to_input())).store_edit
+        answer = (await self._generated.store_edit(store_input(settings))).store_edit
         return map_store(answer, answer.achievements)

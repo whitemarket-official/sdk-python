@@ -1,6 +1,8 @@
 """The omitted-argument sentinel shared by generated code and the transport."""
 
-from typing import Final, final
+from typing import Final, TypeVar, final
+
+_T = TypeVar("_T")
 
 
 @final
@@ -16,3 +18,9 @@ class UnsetType:
 
 
 UNSET: Final = UnsetType()
+
+
+def unset_if_none(value: _T | None) -> _T | UnsetType:
+    """`value`, or `UNSET` (the argument is left out of the request) when it is None. A falsy value
+    such as `0` or `""` is a value and is kept."""
+    return UNSET if value is None else value

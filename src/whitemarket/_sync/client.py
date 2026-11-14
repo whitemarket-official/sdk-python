@@ -37,7 +37,8 @@ from whitemarket.exports.options import ExportOptions
 from whitemarket.live.options import LiveOptions, LiveTransport
 from whitemarket.live.session import LiveSession
 from whitemarket.retry import RetryPolicy
-from whitemarket.selling.options import DEFAULT_BATCH_SIZE, check_batch_size
+from whitemarket.selling._checks import check_batch_size
+from whitemarket.selling.options import DEFAULT_BATCH_SIZE
 
 ENV_PARTNER = "WHITEMARKET_PARTNER_TOKEN"
 ENV_BASE_URL = "WHITEMARKET_BASE_URL"

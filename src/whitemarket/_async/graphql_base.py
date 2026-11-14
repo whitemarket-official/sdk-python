@@ -7,7 +7,7 @@ from pydantic import BaseModel, ValidationError
 
 from whitemarket._async.executor import AsyncOperationExecutor
 from whitemarket._runtime.decode import decode_error_from
-from whitemarket._runtime.json_codec import to_plain
+from whitemarket._runtime.json_codec import to_request_plain
 from whitemarket._runtime.operation import OperationType, infer_operation_type
 
 _Model = TypeVar("_Model", bound=BaseModel)
@@ -33,7 +33,9 @@ class AsyncGraphQLBase:
         the document: only a document that is clearly a query is retried, anything else runs as a
         mutation and is never retried (CLAUDE.md rule 2).
         """
-        plain = cast("dict[str, object]", to_plain(variables or {}))  # a mapping stays a dict
+        plain = cast(
+            "dict[str, object]", to_request_plain(variables or {})
+        )  # a mapping stays a dict
         return await self._executor.execute(
             document, operation_name, plain, operation_type or infer_operation_type(document)
         )

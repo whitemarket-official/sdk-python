@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from whitemarket._runtime.json_codec import RequestNotSentError
 from whitemarket._runtime.rejection import is_batch_rejection
 from whitemarket.errors import (
     AuthenticationError,
@@ -30,6 +31,8 @@ def failure(errors: list[Any], data: dict[str, Any] | None = None, **kw: Any) ->
         pytest.param(BadRequestError(), True, id="400"),
         pytest.param(AuthenticationError(), True, id="401 after the replay"),
         pytest.param(RateLimitError(), True, id="429"),
+        pytest.param(RequestNotSentError("x"), True, id="request not encodable, nothing sent"),
+        pytest.param(ValueError("x"), False, id="any other ValueError"),
         pytest.param(ServerError(), False, id="500"),
         pytest.param(ServiceUnavailableError(), False, id="503"),
         pytest.param(HttpError(418), False, id="unexpected status"),

@@ -6,13 +6,14 @@ from typing import Any
 
 import pytest
 
+from whitemarket._mappers.search import inventory_search_input
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket.inventory import InventoryFilter
 from whitemarket.models import Exterior, Rarity
 
 
 def wire(flt: InventoryFilter) -> Any:
-    return to_plain(flt.to_input())
+    return to_plain(inventory_search_input(flt))
 
 
 def test_an_empty_filter_sends_nothing() -> None:
@@ -44,4 +45,4 @@ def test_an_enum_value_the_schema_does_not_accept_is_refused_when_encoded() -> N
     flt = InventoryFilter(rarities=[Rarity("TELEPORT")])
 
     with pytest.raises(ValueError, match="TELEPORT"):
-        flt.to_input()
+        inventory_search_input(flt)

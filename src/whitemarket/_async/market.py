@@ -4,12 +4,13 @@ Every method is a read-only query, so the transport retries it on transient fail
 """
 
 from collections.abc import AsyncIterator
+from functools import partial
 
 from whitemarket._async.pagination import forward_pagination, iterate_pages
 from whitemarket._generated.client import AsyncGeneratedClient
 from whitemarket._generated.input_types import MarketProductSearchInput, SteamLinkInput
 from whitemarket._mappers.products import map_product, map_product_page, map_sticker_suggestions
-from whitemarket._mappers.wire import search_argument
+from whitemarket._mappers.search import product_search_input, search_argument
 from whitemarket.market.filter import ProductFilter
 from whitemarket.models.page import Page, PageRequest
 from whitemarket.models.products import Product, StickerSuggestions
@@ -40,7 +41,7 @@ class AsyncMarketApi:
         """
         result = await self._generated.market_list(
             forward_pagination=forward_pagination(page),
-            search=search_argument(filter),
+            search=search_argument(filter, MarketProductSearchInput, product_search_input),
         )
         return map_product_page(result.market_list, _LIST)
 
@@ -55,11 +56,7 @@ class AsyncMarketApi:
         Raises what `search()` raises, at the point of the iteration that reads the failing page,
         and `DecodeError` when the server reports a next page without a new cursor.
         """
-
-        async def fetch(after: str | None) -> Page[Product]:
-            return await self.search(filter, PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, _LIST)
+        return iterate_pages(partial(self.search, filter), page_size, _LIST)
 
     async def get(self, id_or_slug: str) -> Product:
         """One listing by its id or slug (`market_item`).

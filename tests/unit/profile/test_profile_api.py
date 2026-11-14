@@ -470,3 +470,21 @@ def test_the_secret_arguments_do_not_show_in_a_traceback_message(flavor: Flavor)
 
     assert STEAM_PAYLOAD not in str(caught.value.__cause__ or "")
     assert STEAM_PAYLOAD not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda p: p.set_trade_url("https://x.invalid/?t=\ud800"), id="set_trade_url"),
+        pytest.param(lambda p: p.set_email("a\ud800@example.invalid"), id="set_email"),
+    ],
+)
+def test_a_text_that_cannot_be_encoded_is_refused_before_anything_is_sent(
+    flavor: Flavor, call: Call
+) -> None:
+    with Rig(flavor, data(profile_steam_link=True)) as rig:
+        with pytest.raises(ValueError, match="valid Unicode text") as caught:
+            rig.call(call(rig.client.profile))
+
+        assert rig.script.count == 0
+    assert "\ud800" not in str(caught.value)

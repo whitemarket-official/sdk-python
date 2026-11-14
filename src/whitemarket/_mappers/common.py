@@ -6,6 +6,7 @@ from typing import Protocol, TypeVar
 from whitemarket._runtime.decimals import parse_decimal
 from whitemarket._runtime.decode import DecodePath
 from whitemarket._runtime.enums import UnknownTolerantEnum
+from whitemarket._runtime.secret import Secret
 from whitemarket.models.enums import Currency
 from whitemarket.models.money import Money
 from whitemarket.models.page import Page
@@ -60,8 +61,18 @@ def convert_enum(target: type[_E], wire: str) -> _E:
     return target(str(wire))
 
 
+def optional_secret(value: str | None) -> Secret | None:
+    """A secret for a value; `None` for null and for an empty value (no secret is set)."""
+    return Secret(value) if value else None
+
+
 def optional_enum(target: type[_E], wire: str | None) -> _E | None:
     return None if wire is None else convert_enum(target, wire)
+
+
+def map_list(rows: Sequence[_N], map_row: Callable[[_N, Path], _R], path: Path) -> list[_R]:
+    """Every row of a list answer mapped; a failing row is reported at `(*path, row index)`."""
+    return [map_row(row, (*path, index)) for index, row in enumerate(rows)]
 
 
 def map_page(

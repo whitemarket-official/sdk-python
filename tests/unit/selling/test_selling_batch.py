@@ -4,7 +4,7 @@ boundary: chunking, re-indexing, outcomes and the failure classification (SDK_SP
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -618,3 +618,79 @@ def test_a_row_is_checked_against_the_item_requested_at_its_position(
     assert outcomes(error.value.results) == [U, U], "a mismatch makes the whole chunk unknown"
     assert isinstance(error.value.__cause__, DecodeError)
     assert error.value.__cause__.path[-2:] == ("product", "id")
+
+
+BROKEN_PRICE = {"currency": "USD", "value": "not-a-number"}
+BROKEN_WEAR = "not-a-number"
+
+
+@pytest.mark.parametrize(
+    ("method", "items", "product"),
+    [
+        pytest.param(
+            "remove_many",
+            [uuid_of(0)],
+            lambda: sp.REMOVE.archived(uuid_of(9), price=BROKEN_PRICE),
+            id="remove_many: another listing, price unreadable",
+        ),
+        pytest.param(
+            "reprice_many",
+            [uuid_of(0)],
+            lambda: sp.EDIT.live(uuid_of(9), item=None, price=BROKEN_PRICE),
+            id="reprice_many: another listing, price unreadable",
+        ),
+        pytest.param(
+            "list_many",
+            ["1001"],
+            lambda: sp.NEW.live(uuid_of(9), item=mp.item(assetId="999", **{"float": BROKEN_WEAR})),
+            id="list_many: another asset, wear unreadable",
+        ),
+        pytest.param(
+            "list_many",
+            ["1001"],
+            lambda: sp.NEW.live(uuid_of(9), item=mp.item(assetId="999"), price=BROKEN_PRICE),
+            id="list_many: another asset, price unreadable",
+        ),
+    ],
+)
+def test_the_identity_of_a_row_is_checked_even_when_its_product_cannot_be_decoded(
+    flavor: Flavor, method: str, items: list[str], product: Callable[[], dict[str, Any]]
+) -> None:
+    batch = MANY[method][0]
+    row = batch.row(0, True, product())
+    build = {
+        "list_many": lambda: rig.client.selling.list_many([Listing(i, PRICE) for i in items]),
+        "reprice_many": lambda: rig.client.selling.reprice_many(
+            [PriceChange(i, PRICE) for i in items]
+        ),
+        "remove_many": lambda: rig.client.selling.remove_many(items),
+    }[method]
+    with make(flavor, batch.answer([row])) as rig, pytest.raises(BatchIncompleteError) as error:
+        rig.call(build())
+
+    assert outcomes(error.value.results) == [U]
+    assert isinstance(error.value.__cause__, DecodeError)
+
+
+def test_a_chunk_that_cannot_be_encoded_is_not_sent_and_stops_the_batch(flavor: Flavor) -> None:
+    # A frozen options object whose validation was bypassed: a float lifetime cannot be encoded.
+    options = ListingOptions()
+    object.__setattr__(options, "lifetime", 60.5)
+    with make(flavor, sp.NEW.answer(sp.NEW.rows_for(1, "x")), size=1) as rig:
+        with pytest.raises(BatchIncompleteError) as error:
+            rig.call(
+                rig.client.selling.list_many(
+                    [Listing("1001", PRICE), Listing("1002", PRICE)], options
+                )
+            )
+
+        assert rig.script.count == 0, "nothing was sent"
+    assert outcomes(error.value.results) == [N, N]
+    assert isinstance(error.value.__cause__, ValueError)
+
+
+def test_set_lifetime_for_all_refuses_a_fractional_number_of_seconds(flavor: Flavor) -> None:
+    with make(flavor, reply(500)) as rig:
+        with pytest.raises(TypeError, match="lifetime must be an int"):
+            rig.call(rig.client.selling.set_lifetime_for_all(cast("Any", 600.5)))
+        assert rig.script.count == 0

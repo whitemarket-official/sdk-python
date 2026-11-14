@@ -4,24 +4,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from whitemarket._generated.enums import (
-    CatalogColor,
-    CSGOCategory,
-    CSGOExterior,
-    CSGOPhase,
-    CSGORarity,
-    CSGOSubcategory,
-)
-from whitemarket._generated.enums import LogicOperand as WireLogicOperand
-from whitemarket._generated.input_types import PersonInventorySearchInput
-from whitemarket._mappers.wire import (
-    present,
-    product_sort_input,
-    wire_decimal,
-    wire_enum,
-    wire_enums,
-    wire_list,
-)
 from whitemarket._runtime.filter_checks import normalize_filter
 from whitemarket.market.filter import ProductSort
 from whitemarket.models.enums import (
@@ -79,34 +61,3 @@ class InventoryFilter:
 
     def __post_init__(self) -> None:
         normalize_filter(self, tuples=_TUPLE_FIELDS, decimals=_DECIMAL_FIELDS)
-
-    def to_input(self) -> PersonInventorySearchInput:
-        """The generated input; used by the high-level API, not part of the public API."""
-        return PersonInventorySearchInput(
-            **present(
-                color_enum=wire_enums(CatalogColor, self.colors),
-                csgo_charm=self.has_charm,
-                csgo_collection=self.collection,
-                csgo_exterior_enum=wire_enums(CSGOExterior, self.exteriors),
-                csgo_fade_from=self.fade_from,
-                csgo_fade_rank_from=self.fade_rank_from,
-                csgo_fade_rank_to=self.fade_rank_to,
-                csgo_fade_to=self.fade_to,
-                csgo_float_from=wire_decimal(self.float_from),
-                csgo_float_to=wire_decimal(self.float_to),
-                csgo_item_category_enum=wire_enum(CSGOCategory, self.category),
-                csgo_item_subcategory_enum=wire_enum(CSGOSubcategory, self.subcategory),
-                csgo_pattern=self.pattern,
-                csgo_phase_enum=wire_enum(CSGOPhase, self.phase),
-                csgo_rarity_enum=wire_enums(CSGORarity, self.rarities),
-                csgo_souvenir=self.souvenir,
-                csgo_stat_trak=self.stat_trak,
-                csgo_sticker_names=wire_list(self.sticker_names),
-                csgo_sticker_names_operand=wire_enum(WireLogicOperand, self.sticker_names_operand),
-                csgo_stickers=self.has_stickers,
-                name=self.name,
-                name_hash=self.name_hash,
-                name_strict=self.name_strict,
-                sort=None if self.sort is None else product_sort_input(self.sort),
-            )
-        )

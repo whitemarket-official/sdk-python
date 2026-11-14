@@ -13,25 +13,27 @@ import math
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
+from functools import partial
 from typing import Final
 
+from whitemarket._async.deal_lookup import find_archived_deal, find_live_deal
 from whitemarket._async.pagination import forward_pagination, iterate_pages
 from whitemarket._async.seams import AsyncSleeper
 from whitemarket._concurrency import async_sleep
 from whitemarket._generated.client import AsyncGeneratedClient
 from whitemarket._generated.enums import Currency, MarketDealExternalCancelReason, MarketDealStatus
 from whitemarket._generated.input_types import MarkerDealHistorySearchInput
-from whitemarket._mappers.common import money
+from whitemarket._mappers.common import map_list, map_page, money
 from whitemarket._mappers.deals import (
     deal_state_of,
     map_archived_deal,
-    map_archived_deal_page,
     map_deal,
     map_deal_state,
-    map_deals,
 )
+from whitemarket._mappers.search import deal_history_search_input, search_argument
 from whitemarket._mappers.wire import wire_enum, wire_enums
-from whitemarket._runtime.unset import UNSET, UnsetType
+from whitemarket._runtime.text_args import require_text
+from whitemarket._runtime.unset import UNSET, UnsetType, unset_if_none
 from whitemarket._runtime.uuids import is_uuid
 from whitemarket.deals.history import DealHistoryFilter
 from whitemarket.deals.until import DealPredicate
@@ -103,26 +105,14 @@ class AsyncDealsApi:
         only.
         """
         requested = list(dict.fromkeys(ids))
-        by_id: dict[str, DealState] = {}
-        by_folded_id: dict[str, DealState] = {}
-        by_custom_id: dict[str, DealState] = {}
+        states: list[DealState] = []
         for start in range(0, len(requested), MAX_STATUS_IDS):
             chunk = requested[start : start + MAX_STATUS_IDS]
             answer = await self._generated.deal_buyer_statuses(chunk)
-            for index, row in enumerate(answer.deal_buyer_statuses):
-                state = map_deal_state(row, ("deal_buyer_statuses", index))
-                by_id[state.id] = state
-                if is_uuid(state.id):
-                    by_folded_id[state.id.lower()] = state
-                if state.custom_id is not None:
-                    by_custom_id[state.custom_id] = state
-        found: dict[str, DealState] = {}
-        for key in requested:
-            by_key = by_folded_id.get(key.lower()) if is_uuid(key) else by_id.get(key)
-            match = by_custom_id.get(key) if by_key is None else by_key
-            if match is not None:
-                found[key] = match
-        return found
+            states.extend(
+                map_list(answer.deal_buyer_statuses, map_deal_state, ("deal_buyer_statuses",))
+            )
+        return _match_requested(requested, states)
 
     async def list_as_buyer(
         self,
@@ -137,7 +127,7 @@ class AsyncDealsApi:
         answer = await self._generated.deal_buyer_list(
             _status_filter(statuses_with), _status_filter(statuses_without)
         )
-        return map_deals(answer.deal_buyer_list, ("deal_buyer_list",))
+        return map_list(answer.deal_buyer_list, map_deal, ("deal_buyer_list",))
 
     async def list_as_seller(
         self,
@@ -149,7 +139,7 @@ class AsyncDealsApi:
         answer = await self._generated.deal_seller_list(
             _status_filter(statuses_with), _status_filter(statuses_without)
         )
-        return map_deals(answer.deal_seller_list, ("deal_seller_list",))
+        return map_list(answer.deal_seller_list, map_deal, ("deal_seller_list",))
 
     async def history(
         self,
@@ -165,9 +155,9 @@ class AsyncDealsApi:
         """
         answer = await self._generated.deal_history(
             forward_pagination=forward_pagination(page),
-            search=filter.to_input() if isinstance(filter, DealHistoryFilter) else filter or UNSET,
+            search=search_argument(filter, MarkerDealHistorySearchInput, deal_history_search_input),
         )
-        return map_archived_deal_page(answer.deal_history, ("deal_history",))
+        return map_page(answer.deal_history, map_archived_deal, ("deal_history",))
 
     def iterate_history(
         self,
@@ -179,11 +169,7 @@ class AsyncDealsApi:
         None). Raises what `history()` raises, at the point of the iteration that reads the
         failing page, and `DecodeError` when the server reports a next page without a new cursor.
         """
-
-        async def fetch(after: str | None) -> Page[Deal]:
-            return await self.history(filter, PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, ("deal_history",))
+        return iterate_pages(partial(self.history, filter), page_size, ("deal_history",))
 
     async def request_cancel(self, id: str) -> Deal:
         """Ask to cancel a deal as the buyer (`deal_request_cancel`), a mutation: sent once, never
@@ -244,10 +230,7 @@ class AsyncDealsApi:
     async def hold_balances(self) -> list[Money]:
         """The balances held in deals, one entry per currency (`deal_balances_hold`)."""
         answer = await self._generated.deal_balances_hold()
-        return [
-            money(row, ("deal_balances_hold", index))
-            for index, row in enumerate(answer.deal_balances_hold)
-        ]
+        return map_list(answer.deal_balances_hold, money, ("deal_balances_hold",))
 
     async def wait_for(
         self,
@@ -290,24 +273,14 @@ class AsyncDealsApi:
         per SDK_SPEC 1.4 and the request timeout) may finish after it, so the call can return or
         raise up to one poll's duration after the timeout.
         """
-        _require_reference(id_or_custom_id)
-        if not (math.isfinite(poll_interval) and poll_interval > 0):
-            raise ValueError("poll_interval must be a finite number of seconds above 0")
-        if timeout is not None and not (math.isfinite(timeout) and timeout >= 0):
-            raise ValueError("timeout must be None or a finite number of seconds, 0 or more")
+        _check_wait_args(id_or_custom_id, poll_interval, timeout)
 
         start = self._clock()
         via_get = False
         last: DealState | None = None  # the last state seen, kept for the timeout error
         while True:
             polled_at = self._clock()
-            seen: DealState | None = None
-            if not via_get:
-                seen = next(iter((await self.statuses([id_or_custom_id])).values()), None)
-                via_get = seen is None
-            if via_get:
-                with contextlib.suppress(NotFoundError):  # not visible yet: keep polling
-                    seen = deal_state_of(await self.get(id_or_custom_id))
+            seen, via_get = await self._read_state(id_or_custom_id, via_get)
             if seen is not None:
                 last = seen
                 if until(seen):
@@ -322,6 +295,21 @@ class AsyncDealsApi:
                 await self._sleeper(pause)
             else:
                 await self._wait_live(live, pause, _event_deal_id(id_or_custom_id, last), polled_at)
+
+    async def _read_state(
+        self, id_or_custom_id: str, via_get: bool
+    ) -> tuple[DealState | None, bool]:
+        """One poll of `wait_for`: the state seen (None: not visible yet) and whether the next poll
+        reads with `get()`. `deal_buyer_statuses` goes first until it fails to report the deal; the
+        deal is then read with `get()` from then on."""
+        seen: DealState | None = None
+        if not via_get:
+            seen = next(iter((await self.statuses([id_or_custom_id])).values()), None)
+            via_get = seen is None
+        if via_get:
+            with contextlib.suppress(NotFoundError):  # not visible yet: keep polling
+                seen = deal_state_of(await self.get(id_or_custom_id))
+        return seen, via_get
 
     async def _wait_live(
         self, live: AsyncLiveSession, seconds: float, deal_id: str, polled_at: float
@@ -360,15 +348,41 @@ class AsyncDealsApi:
 
     async def _lookup(self, *, id: str | None = None, custom_id: str | None = None) -> Deal:
         """`deal_item`, then `deal_history_item` on not-found, under one key."""
-        key_id = UNSET if id is None else id
-        key_custom = UNSET if custom_id is None else custom_id
+        key_id = unset_if_none(id)
+        key_custom = unset_if_none(custom_id)
         try:
-            live = await self._generated.deal_item(custom_id=key_custom, id=key_id)
-            return map_deal(live.deal_item, ("deal_item",))
+            return await find_live_deal(self._generated, custom_id=key_custom, id=key_id)
         except NotFoundError:
             pass  # Not a deal in progress: the archive is next.
-        archived = await self._generated.deal_history_item(custom_id=key_custom, id=key_id)
-        return map_archived_deal(archived.deal_history_item, ("deal_history_item",))
+        return await find_archived_deal(self._generated, custom_id=key_custom, id=key_id)
+
+
+def _match_requested(requested: Sequence[str], states: Sequence[DealState]) -> dict[str, DealState]:
+    """The states keyed by the requested string (see `statuses()` for the matching rules)."""
+    by_id: dict[str, DealState] = {}
+    by_folded_id: dict[str, DealState] = {}
+    by_custom_id: dict[str, DealState] = {}
+    for state in states:
+        by_id[state.id] = state
+        if is_uuid(state.id):
+            by_folded_id[state.id.lower()] = state
+        if state.custom_id is not None:
+            by_custom_id[state.custom_id] = state
+    found: dict[str, DealState] = {}
+    for key in requested:
+        by_key = by_folded_id.get(key.lower()) if is_uuid(key) else by_id.get(key)
+        match = by_custom_id.get(key) if by_key is None else by_key
+        if match is not None:
+            found[key] = match
+    return found
+
+
+def _check_wait_args(id_or_custom_id: str, poll_interval: float, timeout: float | None) -> None:
+    _require_reference(id_or_custom_id)
+    if not (math.isfinite(poll_interval) and poll_interval > 0):
+        raise ValueError("poll_interval must be a finite number of seconds above 0")
+    if timeout is not None and not (math.isfinite(timeout) and timeout >= 0):
+        raise ValueError("timeout must be None or a finite number of seconds, 0 or more")
 
 
 def _event_deal_id(reference: str, last: DealState | None) -> str:
@@ -380,8 +394,7 @@ def _event_deal_id(reference: str, last: DealState | None) -> str:
 
 
 def _require_reference(id_or_custom_id: str) -> None:
-    if id_or_custom_id == "":
-        raise ValueError("the deal id or custom_id must not be empty")
+    require_text(id_or_custom_id, "the deal id or custom_id", non_empty=True)
 
 
 def _status_filter(statuses: Sequence[DealStatus] | None) -> list[MarketDealStatus] | UnsetType:

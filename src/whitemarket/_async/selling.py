@@ -18,6 +18,7 @@ every item.
 
 import builtins
 from collections.abc import AsyncIterator, Sequence
+from functools import partial
 from typing import Final, Protocol, TypeVar
 
 from whitemarket._async.pagination import forward_pagination, iterate_pages
@@ -30,9 +31,10 @@ from whitemarket._generated.input_types import (
     MarketProductSearchInput,
 )
 from whitemarket._mappers.products import map_product, map_product_history, map_product_page
-from whitemarket._mappers.wire import present, search_argument, wire_enum, wire_money
+from whitemarket._mappers.search import product_search_input, search_argument
+from whitemarket._mappers.wire import present, wire_enum, wire_money
 from whitemarket._runtime.rejection import is_batch_rejection
-from whitemarket._runtime.unset import UNSET
+from whitemarket._runtime.unset import unset_if_none
 from whitemarket.errors import BatchIncompleteError, DecodeError
 from whitemarket.market.filter import ProductFilter
 from whitemarket.models.enums import DeliveryPromise, DeliveryType
@@ -48,18 +50,17 @@ from whitemarket.selling._batch import (
     same_repriced_listing,
     with_outcome,
 )
-from whitemarket.selling.items import (
-    Listing,
-    PriceChange,
+from whitemarket.selling._checks import check_batch_size, require_whole_seconds
+from whitemarket.selling._references import (
     inventory_or_asset,
     product_or_asset,
     require_product_id,
 )
+from whitemarket.selling.items import Listing, PriceChange
 from whitemarket.selling.options import (
     DEFAULT_BATCH_SIZE,
     MIN_LIFETIME_FOR_ALL,
     ListingOptions,
-    check_batch_size,
 )
 from whitemarket.selling.results import BatchItemResult, BatchOutcome
 
@@ -157,8 +158,8 @@ class AsyncSellingApi:
             answer = await self._generated.market_new_multiple(
                 items=builtins.list(chunk),
                 delivery_type=delivery_type,
-                delivery_promise=UNSET if promise is None else promise,
-                lifetime=UNSET if options.lifetime is None else options.lifetime,
+                delivery_promise=unset_if_none(promise),
+                lifetime=unset_if_none(options.lifetime),
             )
             return answer.market_new_multiple
 
@@ -221,6 +222,7 @@ class AsyncSellingApi:
 
         Returns the server's answer. Sent once, never retried.
         """
+        require_whole_seconds(seconds, "lifetime")
         if seconds < MIN_LIFETIME_FOR_ALL:
             raise ValueError(
                 f"The lifetime must be at least {MIN_LIFETIME_FOR_ALL} seconds, got {seconds}."
@@ -239,7 +241,8 @@ class AsyncSellingApi:
         `MarketProductSearchInput` is sent as is.
         """
         result = await self._generated.market_my(
-            forward_pagination=forward_pagination(page), search=search_argument(filter)
+            forward_pagination=forward_pagination(page),
+            search=search_argument(filter, MarketProductSearchInput, product_search_input),
         )
         return map_product_page(result.market_my, _MY)
 
@@ -251,11 +254,7 @@ class AsyncSellingApi:
         """Every listing of yours that matches, page after page; a page is requested only when
         the previous one is consumed. `page_size` is the items per request (the server's default
         when None)."""
-
-        async def fetch(after: str | None) -> Page[Product]:
-            return await self.my_products(filter, PageRequest(first=page_size, after=after))
-
-        return iterate_pages(fetch, _MY)
+        return iterate_pages(partial(self.my_products, filter), page_size, _MY)
 
     async def _batch(
         self,

@@ -1,6 +1,7 @@
 """Mappers of the market models: `Product`, `ProductHistory`, `InventoryItem`, stickers."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast, runtime_checkable
 
@@ -166,6 +167,37 @@ def map_product_history(source: ProductHistorySource, path: Path) -> ProductHist
         instance_id=source.instance_id,
         item=map_inventory_item(source.params, source.description, (*path, "params")),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class BatchIdentity:
+    """Who a `*_multiple` row's product says it is, read without decoding any money or wear value.
+
+    `listing_id` is the id of the listing (live or archived); `item_id` and `asset_id` come from
+    the item of a live listing and are None without one. `archived` tells a `MarketProductHistory`
+    from a `MarketProduct`.
+    """
+
+    listing_id: str
+    archived: bool
+    item_id: str | None
+    asset_id: str | None
+
+
+def batch_identity(product: object) -> BatchIdentity | None:
+    """The identity of the product of a `*_multiple` row; None for an absent product or a type this
+    SDK does not know. It never raises on an unreadable price or wear: the identity check must not
+    depend on the rest of the row decoding (SDK_SPEC 3.5)."""
+    kind: object = getattr(product, "typename__", None)
+    if kind == "MarketProductHistory":
+        return BatchIdentity(cast("ProductHistorySource", product).id, True, None, None)
+    if kind != "MarketProduct":
+        return None
+    source = cast("ProductSource", product)
+    item = source.item
+    if isinstance(item, ItemSource):
+        return BatchIdentity(source.id, False, item.id, item.asset_id)
+    return BatchIdentity(source.id, False, None, None)
 
 
 def map_batch_product(product: object, path: Path) -> Product | ProductHistory | None:

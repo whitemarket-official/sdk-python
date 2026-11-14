@@ -1,16 +1,10 @@
 """Mapper of the `Profile` model (SDK_SPEC 3.9)."""
 
 from whitemarket._generated.fragments import PersonFullFields, TradingCompetitionPersonItemFields
-from whitemarket._mappers.common import convert_enum, optional_enum
-from whitemarket._runtime.secret import Secret
+from whitemarket._mappers.common import convert_enum, optional_enum, optional_secret
 from whitemarket.models.account_enums import Locale
 from whitemarket.models.enums import DeliveryPromise
 from whitemarket.models.profile import Profile, TradingCompetitionStat
-
-
-def optional_secret(value: str | None) -> Secret | None:
-    """A secret for a value; `None` for null and for an empty value (SDK_SPEC 3.9 rule 1)."""
-    return Secret(value) if value else None
 
 
 def map_profile(person: PersonFullFields, stat: TradingCompetitionPersonItemFields) -> Profile:

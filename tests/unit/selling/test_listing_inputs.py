@@ -9,8 +9,8 @@ import pytest
 
 from whitemarket.models import Currency, DeliveryPromise, DeliveryType, Money
 from whitemarket.selling import DEFAULT_BATCH_SIZE, Listing, ListingOptions, PriceChange
-from whitemarket.selling.items import require_product_id
-from whitemarket.selling.options import check_batch_size
+from whitemarket.selling._checks import check_batch_size
+from whitemarket.selling._references import require_product_id
 
 UUID = "7d1c0e52-3b8a-4f6d-9a21-5e4c8b7f0a13"
 PRICE = Money.usd("5.00")
@@ -190,3 +190,18 @@ def test_the_batch_size_must_be_at_least_one(size: int, accepted: bool) -> None:
 def test_the_batch_size_must_be_an_int(size: Any) -> None:
     with pytest.raises(TypeError, match="must be an int"):
         check_batch_size(size)
+
+
+@pytest.mark.parametrize(
+    "lifetime",
+    [
+        pytest.param(60.5, id="a fractional float"),
+        pytest.param(3600.0, id="a whole float"),
+        pytest.param(Decimal(3600), id="a Decimal"),
+        pytest.param(True, id="a bool"),
+        pytest.param("3600", id="a string"),
+    ],
+)
+def test_a_lifetime_that_is_not_an_int_is_refused_at_construction(lifetime: Any) -> None:
+    with pytest.raises(TypeError, match="lifetime must be an int"):
+        ListingOptions(lifetime=lifetime)
