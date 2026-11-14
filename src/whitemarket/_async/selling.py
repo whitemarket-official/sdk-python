@@ -1,0 +1,299 @@
+"""`client.selling`: put items on sale, change prices, take listings down, read your own listings
+(SDK_SPEC 3.5).
+
+Every mutation is sent at most once (CLAUDE.md rule 2): the transport never retries it and no
+method resends it. The selling mutations have no idempotency key, so there is no reconciliation
+either: when one fails in a way that does not tell whether it ran (a timeout, a 5xx, an unreadable
+answer) the error propagates as is and the outcome is unknown; check `my_products()` before trying
+again. A malformed request (400), a rejected credential (401) and a rate limit (429) mean the
+server did not run it, and so does a GraphQL error of the root field of a single mutation. In a
+`*_many` call only a GraphQL request error without a path and without `data` does: an error at the
+root field means the resolver started and may have acted on some items.
+
+A `*_many` method sends one request per chunk of `selling_batch_size` items (CLAUDE.md rules 6
+and 7), in order, and stops at the first request that fails. It returns only when the server
+reported an outcome for every item; otherwise it raises `BatchIncompleteError` with the outcome of
+every item.
+"""
+
+import builtins
+from collections.abc import AsyncIterator, Sequence
+from typing import Final, Protocol, TypeVar
+
+from whitemarket._async.pagination import forward_pagination, iterate_pages
+from whitemarket._generated.client import AsyncGeneratedClient
+from whitemarket._generated.enums import DeliveryPromise as WireDeliveryPromise
+from whitemarket._generated.enums import DeliveryType as WireDeliveryType
+from whitemarket._generated.input_types import (
+    MarketProductEditInput,
+    MarketProductNewInput,
+    MarketProductSearchInput,
+)
+from whitemarket._mappers.products import map_product, map_product_history, map_product_page
+from whitemarket._mappers.wire import present, search_argument, wire_enum, wire_money
+from whitemarket._runtime.rejection import is_batch_rejection
+from whitemarket._runtime.unset import UNSET
+from whitemarket.errors import BatchIncompleteError, DecodeError
+from whitemarket.market.filter import ProductFilter
+from whitemarket.models.enums import DeliveryPromise, DeliveryType
+from whitemarket.models.money import Money
+from whitemarket.models.page import Page, PageRequest
+from whitemarket.models.products import Product, ProductHistory
+from whitemarket.selling._batch import (
+    BatchRow,
+    SameItem,
+    match_rows,
+    same_listed_item,
+    same_removed_listing,
+    same_repriced_listing,
+    with_outcome,
+)
+from whitemarket.selling.items import (
+    Listing,
+    PriceChange,
+    inventory_or_asset,
+    product_or_asset,
+    require_product_id,
+)
+from whitemarket.selling.options import (
+    DEFAULT_BATCH_SIZE,
+    MIN_LIFETIME_FOR_ALL,
+    ListingOptions,
+    check_batch_size,
+)
+from whitemarket.selling.results import BatchItemResult, BatchOutcome
+
+_T = TypeVar("_T")
+_T_contra = TypeVar("_T_contra", contravariant=True)
+_MY = ("market_my",)
+_NEW: Final = "market_new_multiple"
+_EDIT: Final = "market_edit_multiple"
+_REMOVE: Final = "market_remove_multiple"
+
+
+class AsyncChunkSender(Protocol[_T_contra]):
+    """Sends the one request of a chunk and returns the rows of its answer."""
+
+    async def __call__(self, chunk: Sequence[_T_contra], /) -> Sequence[BatchRow]: ...
+
+
+class AsyncSellingApi:
+    """`client.selling`.
+
+    Raises, before anything is sent, `ValueError` / `TypeError` for an item reference that is
+    neither a UUID nor a Steam asset id (digits), a lifetime outside 60 to 31536000 seconds, `AUTO`
+    delivery, or a price in a currency the API does not know. See the module documentation for
+    what a failed mutation means.
+    """
+
+    def __init__(
+        self, generated: AsyncGeneratedClient, batch_size: int = DEFAULT_BATCH_SIZE
+    ) -> None:
+        self._generated = generated
+        self._batch_size = check_batch_size(batch_size)
+
+    async def list(
+        self,
+        item: str,
+        price: Money,
+        *,
+        delivery_type: DeliveryType = DeliveryType.SEMI,
+        delivery_promise: DeliveryPromise | None = None,
+        lifetime: int | None = None,
+    ) -> Product:
+        """Put one item on sale (`market_new`).
+
+        `item` is an inventory id (UUID) or a 64-bit Steam asset id (digits, kept as a string).
+        `delivery_type` is always sent (`SEMI` by default; `AUTO` is refused). `lifetime` is in
+        seconds, 60 to 31536000; the server's default (the maximum) when None. Sent once, never
+        retried; the outcome of an ambiguous failure is unknown: check `my_products()`.
+        """
+        reference = inventory_or_asset(item)
+        amount = wire_money(price)
+        options = ListingOptions(
+            delivery_type=delivery_type, delivery_promise=delivery_promise, lifetime=lifetime
+        )
+        promise = wire_enum(WireDeliveryPromise, options.delivery_promise)
+        answer = await self._generated.market_new(
+            price=amount,
+            delivery_type=wire_enum(WireDeliveryType, options.delivery_type),
+            **present(
+                asset_id=reference.asset_id,
+                inventory_id=reference.uuid,
+                lifetime=options.lifetime,
+                delivery_promise=promise,
+            ),
+        )
+        return map_product(answer.market_new, ("market_new",))
+
+    async def list_many(
+        self, items: Sequence[Listing], options: ListingOptions | None = None
+    ) -> builtins.list[BatchItemResult]:
+        """Put many items on sale (`market_new_multiple`), `options` applying to every item.
+
+        One request per chunk, each sent once. Returns one `BatchItemResult` per listing, in the
+        caller's order, each `SUCCEEDED` or `FAILED` as the server reported; an empty list sends
+        nothing.
+
+        Raises `BatchIncompleteError` when a request failed (its items are `UNKNOWN`, or `NOT_SENT`
+        when the server rejected it before running it: HTTP 400/401/429, or a GraphQL request error
+        without `data`; later items are `NOT_SENT`, earlier ones keep their outcome) or the server
+        did not report some items (`UNKNOWN`).
+        """
+        options = options or ListingOptions()
+        promise = wire_enum(WireDeliveryPromise, options.delivery_promise)
+        delivery_type = wire_enum(WireDeliveryType, options.delivery_type)
+        inputs: builtins.list[MarketProductNewInput] = []
+        for listing in items:
+            reference = inventory_or_asset(listing.item)
+            inputs.append(
+                MarketProductNewInput(
+                    price=wire_money(listing.price),
+                    **present(asset_id=reference.asset_id, inventory_id=reference.uuid),
+                )
+            )
+
+        async def send(chunk: Sequence[MarketProductNewInput]) -> Sequence[BatchRow]:
+            answer = await self._generated.market_new_multiple(
+                items=builtins.list(chunk),
+                delivery_type=delivery_type,
+                delivery_promise=UNSET if promise is None else promise,
+                lifetime=UNSET if options.lifetime is None else options.lifetime,
+            )
+            return answer.market_new_multiple
+
+        return await self._batch(inputs, _NEW, send, same_listed_item)
+
+    async def reprice(self, product_id: str, price: Money) -> Product:
+        """Change the price of one listing (`market_edit`). `product_id` is a listing id (UUID).
+
+        Sent once, never retried; the outcome of an ambiguous failure is unknown: check
+        `my_products()`.
+        """
+        require_product_id(product_id)
+        answer = await self._generated.market_edit(product_id, wire_money(price))
+        return map_product(answer.market_edit, ("market_edit",))
+
+    async def reprice_many(self, items: Sequence[PriceChange]) -> builtins.list[BatchItemResult]:
+        """Change the prices of many listings (`market_edit_multiple`); the batch rules of
+        `list_many()` apply."""
+        inputs: builtins.list[MarketProductEditInput] = []
+        for change in items:
+            reference = product_or_asset(change.product)
+            inputs.append(
+                MarketProductEditInput(
+                    price=wire_money(change.price),
+                    **present(asset_id=reference.asset_id, product_id=reference.uuid),
+                )
+            )
+
+        async def send(chunk: Sequence[MarketProductEditInput]) -> Sequence[BatchRow]:
+            answer = await self._generated.market_edit_multiple(builtins.list(chunk))
+            return answer.market_edit_multiple
+
+        return await self._batch(inputs, _EDIT, send, same_repriced_listing)
+
+    async def remove(self, product_id: str) -> ProductHistory:
+        """Take one listing down (`market_remove`) and return its archived record.
+
+        Sent once, never retried; the outcome of an ambiguous failure is unknown: check
+        `my_products()`.
+        """
+        require_product_id(product_id)
+        answer = await self._generated.market_remove(product_id)
+        return map_product_history(answer.market_remove, ("market_remove",))
+
+    async def remove_many(self, ids: Sequence[str]) -> builtins.list[BatchItemResult]:
+        """Take many listings down (`market_remove_multiple`); the batch rules of `list_many()`
+        apply. Every id (a UUID; an asset id is refused) is checked before the first request."""
+        listing_ids = builtins.list(ids)
+        for product_id in listing_ids:
+            require_product_id(product_id)
+
+        async def send(chunk: Sequence[str]) -> Sequence[BatchRow]:
+            answer = await self._generated.market_remove_multiple(builtins.list(chunk))
+            return answer.market_remove_multiple
+
+        return await self._batch(listing_ids, _REMOVE, send, same_removed_listing)
+
+    async def set_lifetime_for_all(self, seconds: int) -> bool:
+        """Set the lifetime of every active listing (`market_lifetime_all`), at least 600 seconds.
+
+        Returns the server's answer. Sent once, never retried.
+        """
+        if seconds < MIN_LIFETIME_FOR_ALL:
+            raise ValueError(
+                f"The lifetime must be at least {MIN_LIFETIME_FOR_ALL} seconds, got {seconds}."
+            )
+        return (await self._generated.market_lifetime_all(seconds)).market_lifetime_all
+
+    async def my_products(
+        self,
+        filter: ProductFilter | MarketProductSearchInput | None = None,
+        page: PageRequest | None = None,
+    ) -> Page[Product]:
+        """One page of your own listings (`market_my`); a query, retried on transient failures.
+
+        Pass `PageRequest(after=previous.end_cursor)` for the next page while
+        `previous.has_next_page` is true, or use `iterate_my_products()`. A raw
+        `MarketProductSearchInput` is sent as is.
+        """
+        result = await self._generated.market_my(
+            forward_pagination=forward_pagination(page), search=search_argument(filter)
+        )
+        return map_product_page(result.market_my, _MY)
+
+    def iterate_my_products(
+        self,
+        filter: ProductFilter | MarketProductSearchInput | None = None,
+        page_size: int | None = None,
+    ) -> AsyncIterator[Product]:
+        """Every listing of yours that matches, page after page; a page is requested only when
+        the previous one is consumed. `page_size` is the items per request (the server's default
+        when None)."""
+
+        async def fetch(after: str | None) -> Page[Product]:
+            return await self.my_products(filter, PageRequest(first=page_size, after=after))
+
+        return iterate_pages(fetch, _MY)
+
+    async def _batch(
+        self,
+        items: builtins.list[_T],
+        field: str,
+        send: AsyncChunkSender[_T],
+        same_item: SameItem[_T],
+    ) -> builtins.list[BatchItemResult]:
+        """The one chunk loop of the three `*_many` methods; every chunk is one mutation request.
+
+        A chunk whose request fails marks its items `NOT_SENT` (a rejection) or `UNKNOWN`, and
+        the batch stops: later chunks stay `NOT_SENT`. An answer that cannot be matched to the
+        items (`match_rows` raises `DecodeError`) makes the chunk `UNKNOWN` and stops the batch
+        too: the mutation has already run. An item without a row is `UNKNOWN` and the later
+        chunks still go out; the error comes at the end. Only `Exception` is caught: a
+        cancellation propagates.
+        """
+        results = [
+            BatchItemResult(index=i, outcome=BatchOutcome.NOT_SENT) for i in range(len(items))
+        ]
+        for offset in range(0, len(items), self._batch_size):
+            chunk = items[offset : offset + self._batch_size]
+            try:
+                rows = await send(chunk)
+            except Exception as error:
+                outcome = (
+                    BatchOutcome.NOT_SENT if is_batch_rejection(error) else BatchOutcome.UNKNOWN
+                )
+                raise BatchIncompleteError(
+                    with_outcome(results, offset, len(chunk), outcome)
+                ) from error
+            try:
+                matched = match_rows(rows, chunk, offset, field, same_item)
+            except DecodeError as error:
+                raise BatchIncompleteError(
+                    with_outcome(results, offset, len(chunk), BatchOutcome.UNKNOWN)
+                ) from error
+            results[offset : offset + len(chunk)] = matched
+        if any(result.outcome is BatchOutcome.UNKNOWN for result in results):
+            raise BatchIncompleteError(results)
+        return results
