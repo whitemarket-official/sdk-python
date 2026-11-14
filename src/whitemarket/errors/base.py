@@ -4,9 +4,10 @@ No error here carries a token, a request body or response data: messages are bui
 ids the caller chose and JSON paths only.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from whitemarket.models.deals import DealState
@@ -64,22 +65,23 @@ class PurchaseOutcomeUnknownError(WhiteMarketError):
 class MutationOutcomeUnknownError(WhiteMarketError):
     """A money-moving mutation failed ambiguously: it may have been applied (SDK_SPEC 3.8).
 
-    `operation` is the SDK method (`wallet.transfer`) and `check_hint` what to read to learn the
-    outcome (`wallet.transfers()`). The mutation was sent once and is never resent: do not send it
-    again before checking. `__cause__` is the original failure. The message names the method and
-    where to check, never an amount or an id.
+    `operation` is the SDK method (`wallet.transfer`); the error derives where to check from it
+    (`wallet.transfers()`). The mutation was sent once and is never resent: do not send it again
+    before checking. `__cause__` is the original failure. The message names the method and where
+    to check, never an amount or an id.
     """
 
-    def __init__(self, operation: str, check_hint: str | None = None) -> None:
+    _CHECK_HINTS: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {"wallet.transfer": "wallet.transfers()", "wallet.take_credit": "wallet.credit()"}
+    )
+
+    def __init__(self, operation: str) -> None:
         self.operation = operation
-        self.check_hint = check_hint
-        if check_hint is None:
-            super().__init__(f"outcome of mutation {operation!r} is unknown")
-        else:
-            super().__init__(
-                f"{operation} may or may not have been executed; "
-                f"check {check_hint} before trying again"
-            )
+        hint = self._CHECK_HINTS.get(operation)
+        where = (
+            f"check {hint} before trying again" if hint else "check the result before trying again"
+        )
+        super().__init__(f"{operation} may or may not have been executed; {where}")
 
 
 class BatchIncompleteError(WhiteMarketError):

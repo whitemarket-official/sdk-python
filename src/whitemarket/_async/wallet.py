@@ -151,7 +151,7 @@ class AsyncWalletApi:
         except Exception as error:
             if is_mutation_rejection(error, "wallet_credit_get"):
                 raise
-            raise MutationOutcomeUnknownError("wallet.take_credit", "wallet.credit()") from error
+            raise MutationOutcomeUnknownError("wallet.take_credit") from error
 
     async def transfer(self, to: str, amount: Money) -> WalletTransfer:
         """Send money to another partner (`wallet_transfer_send`). Sent once, never retried.
@@ -171,4 +171,4 @@ class AsyncWalletApi:
         except Exception as error:
             if is_mutation_rejection(error, "wallet_transfer_send"):
                 raise
-            raise MutationOutcomeUnknownError("wallet.transfer", "wallet.transfers()") from error
+            raise MutationOutcomeUnknownError("wallet.transfer") from error

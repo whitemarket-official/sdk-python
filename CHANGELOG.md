@@ -67,7 +67,7 @@ extras `exports` (`ijson`) and `live` (`websockets`, with an own Centrifugo prot
   `take_credit` and `transfer` are sent once and never retried: a rejection (HTTP 400, 401, 429, a GraphQL error of the root
   field with `data` null) propagates as its own error, any other failure is `MutationOutcomeUnknownError`, whose message names
   the method and where to check (`wallet.credit()` / `wallet.transfers()`) and carries no amount or id.
-  `MutationOutcomeUnknownError` gained `check_hint`. Models `Deposit` (`airwallex_secret` is a `Secret`), `Withdrawal`,
+  Models `Deposit` (`airwallex_secret` is a `Secret`), `Withdrawal`,
   `WalletTransaction`, `WalletTransfer`, `Debt`, `Credit`, `PersonSummary` and the enums `WalletMethod`, `DepositStatus`,
   `WithdrawalStatus`, `TransferStatus`, `TransactionStatus`, `TransactionFeeType`, `TransactionSortField`, `PaymentProvider`,
   `CryptoCurrency`, `CryptoNetwork` (all with an unknown fallback).

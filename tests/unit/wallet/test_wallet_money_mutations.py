@@ -240,7 +240,7 @@ def test_any_other_failure_is_outcome_unknown_after_one_request(
 
         assert rig.script.count == 1, "a mutation is never retried"
     error = caught.value
-    assert (error.operation, error.check_hint) == (m.operation, m.hint)
+    assert error.operation == m.operation
     assert str(error) == (
         f"{m.operation} may or may not have been executed; check {m.hint} before trying again"
     )

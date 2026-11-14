@@ -266,3 +266,19 @@ def test_the_outcome_unknown_errors_name_what_the_caller_needs() -> None:
     assert "cid-1" in str(purchase)
     assert mutation.operation == "wallet_transfer_send"
     assert "wallet_transfer_send" in str(mutation)
+
+
+@pytest.mark.parametrize(
+    ("operation", "where"),
+    [
+        pytest.param("wallet.transfer", "wallet.transfers()", id="transfer"),
+        pytest.param("wallet.take_credit", "wallet.credit()", id="take_credit"),
+        pytest.param("other.op", "the result", id="unmapped-operation"),
+    ],
+)
+def test_the_mutation_outcome_unknown_error_derives_where_to_check(
+    operation: str, where: str
+) -> None:
+    assert str(MutationOutcomeUnknownError(operation)) == (
+        f"{operation} may or may not have been executed; check {where} before trying again"
+    )
