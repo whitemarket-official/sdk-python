@@ -2,11 +2,16 @@
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
+import logging.config
+import tracemalloc
 from typing import Any
 
 import pytest
+from websockets.exceptions import ConnectionClosed
+from websockets.frames import Close
 
 from support.flavors import jwt
 from support.live_servers import (
@@ -25,7 +30,7 @@ from whitemarket.live._connection import (
     StatusFailureError,
 )
 from whitemarket.live._envelope import Disconnect, Ping, Publication, Reply, Unsubscribe
-from whitemarket.live._ws import WsConnection
+from whitemarket.live._ws import WsConnection, _end_of
 
 TOKEN = jwt(exp=4_000_000_000, sub="synthetic-user")
 PRODUCTS = "market_products_updates"
@@ -560,3 +565,108 @@ async def test_the_token_and_deal_data_never_appear_in_debug_logs(
     assert "synthetic-steam-id" not in text
     assert "eyJhbGciOiJub25lIn0" not in text
     assert not any(r.name.startswith("websockets") for r in records)
+
+
+@pytest.fixture
+def debug_logging_config() -> Any:
+    """What an application may do after our import: `dictConfig` naming `whitemarket` at DEBUG."""
+    stream = io.StringIO()
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {"h": {"class": "logging.StreamHandler", "stream": stream}},
+            "loggers": {"whitemarket": {"level": "DEBUG", "handlers": ["h"]}},
+            "root": {"level": "DEBUG", "handlers": ["h"]},
+        }
+    )
+    try:
+        yield stream
+    finally:
+        for name in ("whitemarket", "websockets"):
+            logging.getLogger(name).handlers.clear()
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        logging.getLogger().handlers.clear()
+        logging.getLogger().setLevel(logging.WARNING)
+
+
+async def test_frames_are_never_logged_even_when_the_application_enables_debug(
+    debug_logging_config: io.StringIO,
+) -> None:
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect()
+        await c.send(push(pub_message(PRODUCTS, "market_product_added", PRODUCT_CONTENT)))
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server)
+        await conn.open(Secret(TOKEN), [], 5.0)
+        await read_until(conn, Publication)
+        await conn.close()
+    logged = debug_logging_config.getvalue()
+    assert TOKEN[:20] not in logged
+    assert '"connect"' not in logged
+    assert "market_product_added" not in logged
+
+
+async def test_a_reader_cancelled_with_the_callers_task_propagates_the_cancellation() -> None:
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect()
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server)
+        await conn.open(Secret(TOKEN), [], 5.0)
+        closing = asyncio.create_task(conn.close())
+        await asyncio.sleep(0)  # `close` is now waiting for the reader
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+
+@pytest.mark.parametrize(
+    ("rcvd_then_sent", "expected"),
+    [
+        pytest.param(False, 1008, id="we closed first -> our code"),
+        pytest.param(True, 1001, id="the server closed first -> its code"),
+    ],
+)
+def test_the_close_code_is_the_one_of_the_side_that_closed_first(
+    rcvd_then_sent: bool, expected: int
+) -> None:
+    closed = ConnectionClosed(Close(1001, "echo"), Close(1008, "ours"), rcvd_then_sent)
+    assert _end_of(closed).code == expected
+
+
+async def test_a_flood_of_nested_publications_keeps_memory_bounded_by_the_raw_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("whitemarket.live._connection.BUFFER_BYTES", 8 * 1024 * 1024)  # 8 messages
+    limit = 1_048_576
+    head, tail = '{"push":{"channel":"products","pub":{"data":{"a":[', "]}}}}"
+    payload = head + ",".join(["[]"] * ((limit - len(head) - len(tail) - 10) // 3)) + tail
+    assert len(payload) <= limit
+
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect()
+        for _ in range(20):  # more than the 8 messages the buffer holds
+            await c.send_raw(payload)
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server, max_message_bytes=limit)
+        tracemalloc.start()
+        try:
+            await conn.open(Secret(TOKEN), [], 10.0)
+            assert conn._link is not None
+            link = conn._link
+            for _ in range(400):  # the consumer does not read: wait until the buffer is full
+                if link.overflowed:
+                    break
+                await asyncio.sleep(0.05)
+            assert link.overflowed
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        await conn.close()
+    assert peak < 64 * 1024 * 1024  # eight decoded messages were ~190 MiB

@@ -30,8 +30,10 @@ from whitemarket.live._connection import (
 from whitemarket.live._envelope import (
     ConnectReply,
     Disconnect,
+    OtherMessage,
     Ping,
     ProtocolMessage,
+    Publication,
     Reply,
     Unsubscribe,
     decode_message,
@@ -55,11 +57,26 @@ _ABNORMAL_CLOSURE: Final = 1006
 _POLICY_VIOLATION: Final = 1008
 _CLOSE_TIMEOUT: Final = 5.0
 
-# `websockets` logs every frame (the connect token, deal events with Steam ids) at DEBUG, decided
-# when a connection is created from `logger.isEnabledFor(DEBUG)` [code websockets/protocol.py:108].
-# Our own logger, pinned to INFO, makes that impossible whatever the application configures.
-_LOGGER: Final = logging.getLogger("whitemarket.live.websockets")
-_LOGGER.setLevel(logging.INFO)
+
+class _NoDebugLogger(logging.Logger):
+    """`websockets` logs every frame (the connect token, deal events with Steam ids) at DEBUG,
+    decided once per connection from `logger.isEnabledFor(DEBUG)` [code websockets/protocol.py:108].
+    A logger that never enables DEBUG makes that impossible whatever the application configures
+    (a `dictConfig` or `setLevel` on a parent cannot turn it on). INFO and above still propagate."""
+
+    def isEnabledFor(self, level: int) -> bool:  # noqa: N802 - stdlib method name, see #0
+        return level > logging.DEBUG and super().isEnabledFor(level)
+
+
+def _make_logger() -> logging.Logger:
+    # Not registered in the logger manager (so `dictConfig` cannot reach it); a child of the
+    # `whitemarket` logger by hand so that records still propagate to the application's handlers.
+    logger = _NoDebugLogger("whitemarket.live.websockets")
+    logger.parent = logging.getLogger("whitemarket")
+    return logger
+
+
+_LOGGER: Final = _make_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +89,7 @@ class _End:
     local: bool = False
 
 
-_Item = ProtocolMessage | DecodeError | _End
+_Item = ProtocolMessage | DecodeError | _End | str | bytes
 
 
 class _Link:
@@ -173,6 +190,8 @@ class WsConnection:
             raise _failure(item, connected=True)
         if isinstance(item, DecodeError):
             raise item
+        if isinstance(item, str | bytes):
+            return decode_message(item)  # a raw data message, already decoded once by the pump
         return item
 
     async def subscribe(self, channel: str) -> None:
@@ -193,10 +212,17 @@ class WsConnection:
         if link is None:
             return
         link.ready = False
+        cancelled = False
         if link.reader is not None:
             link.reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            try:
                 await link.reader
+            except asyncio.CancelledError:
+                # The reader's own cancellation is expected; the caller's is not swallowed.
+                task = asyncio.current_task()
+                cancelled = task is not None and task.cancelling() > 0
+            except Exception:  # the pump never raises; a failure is already in the queue
+                cancelled = False
         if not link.connect.done():
             link.connect.cancel()
         elif not link.connect.cancelled():
@@ -206,6 +232,8 @@ class WsConnection:
         link.queue.put_nowait(_End(None, local=True))
         with contextlib.suppress(Exception):
             await link.ws.close()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 async def _handshake(
@@ -250,7 +278,8 @@ async def _send(ws: ClientConnection, text: str) -> bool:
 
 
 def _end_of(closed: ConnectionClosed) -> _End:
-    frame = closed.rcvd or closed.sent
+    # `rcvd_then_sent` False: we closed first, so our own code is the real one, not the echo.
+    frame = closed.sent if closed.rcvd_then_sent is False else closed.rcvd or closed.sent
     if frame is None:
         return _End(_ABNORMAL_CLOSURE)
     return _End(frame.code, printable(frame.reason))
@@ -288,13 +317,13 @@ async def _frame(link: _Link, raw: str | bytes) -> bool:
         if isinstance(message, DecodeError):
             delivered = link.put(message)
         else:
-            delivered = await _message(link, message)
+            delivered = await _message(link, message, line)
         if not delivered:
             return False
     return True
 
 
-async def _message(link: _Link, message: ProtocolMessage) -> bool:
+async def _message(link: _Link, message: ProtocolMessage, line: str | bytes) -> bool:
     if isinstance(message, ConnectReply) and not link.connect.done():
         link.pong = message.pong
         info = ConnectInfo.from_reply(message.ping, message.pong, message.ttl, message.expires)
@@ -315,7 +344,9 @@ async def _message(link: _Link, message: ProtocolMessage) -> bool:
         return True
     elif isinstance(message, Ping) and link.pong:
         await _send(link.ws, "{}")
-    return link.put(message)
+    # The decoded form of a message can be far larger than its text (nested empty lists: ~20x),
+    # so the queue keeps the raw text of the data-bearing kinds and `read` decodes one at a time.
+    return link.put(line if isinstance(message, Publication | OtherMessage) else message)
 
 
 def _failure(end: _End, *, connected: bool) -> Exception:

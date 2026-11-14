@@ -58,7 +58,7 @@ streaks, idle deadline, error replies, resubscribing) is shared with SSE and is 
 - Frames are logged at DEBUG (`> TEXT '...'`, `< TEXT '...'`), and whether to do so is decided when the connection is
   created from `logger.isEnabledFor(DEBUG)` [code `websockets/protocol.py:108`, `610-611`, `756-757`;
   docs https://websockets.readthedocs.io/en/17.4/topics/logging.html: `logger=` replaces the default logger and does not
-  change what is logged]. The SDK passes its own logger `whitemarket.live.websockets` pinned to INFO, so frame logging
+  change what is logged]. The SDK passes its own unregistered logger `whitemarket.live.websockets` whose `isEnabledFor(DEBUG)` is always False (a pinned level is reset by a later `dictConfig` naming a parent), so frame logging
   cannot be switched on by application logging configuration, and no filter on a global logger is installed.
 
 ### What `WsConnection` does

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import tracemalloc
 
 import pytest
 
@@ -229,3 +230,33 @@ def test_the_event_queue_is_bounded_by_bytes(max_message_bytes: int, expected: i
         "http://localhost/sse", "ua", LiveOptions(max_message_bytes=max_message_bytes)
     )
     assert connection._queue.maxsize == expected
+
+
+async def test_a_flood_of_nested_events_keeps_memory_bounded_by_the_raw_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("whitemarket.live._connection.BUFFER_BYTES", 8 * 1024 * 1024)  # 8 messages
+    limit = 1_048_576
+    head, tail = '{"push":{"channel":"products","pub":{"data":{"a":[', "]}}}}"
+    body = head + ",".join(["[]"] * ((limit - len(head) - len(tail) - 10) // 3)) + tail
+    event = b"data: " + body.encode() + b"\n\n"
+    script = SseScript(steps=[sse_data(connect_reply())] + [event] * 20)
+    async with FakeSseServer([script]) as server:
+        conn = SseConnection(
+            server.url, "test-agent/1", LiveOptions(max_message_bytes=limit), trust_env=False
+        )
+        tracemalloc.start()
+        try:
+            await conn.open(Secret(TOKEN), [], 10.0)
+            for _ in range(400):  # the consumer does not read: wait until the buffer is full
+                if conn._queue.full():
+                    break
+                await asyncio.sleep(0.05)
+            assert conn._queue.full()
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        message = await conn.read(2.0)  # one decoded message at a time still works
+        await conn.close()
+    assert isinstance(message, Publication)
+    assert peak < 64 * 1024 * 1024
