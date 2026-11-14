@@ -118,8 +118,14 @@ select = [
 "src/whitemarket/_async/client.py" = ["PLR0913"]
 # PLR0913: the generated twin of the async client constructor above, see #0
 "src/whitemarket/_sync/client.py" = ["PLR0913"]
-# UP028: the generated sync twin of an async `for ...: yield` loop (async code cannot use `yield from`), see #0
-"src/whitemarket/_sync/pagination.py" = ["UP028"]
+# UP028: generated sync twins of async `for ...: yield` loops (async code cannot use `yield from`), see #0
+"src/whitemarket/_sync/**" = ["UP028"]
+# PLR0913: `buy_cheapest` takes the SDK_SPEC 3.3 options as keywords and `_buy` one keyword per `market_buy` target, see #0
+"src/whitemarket/_async/buying.py" = ["PLR0913"]
+# PLR0913: the generated twin of the async buying API above, see #0
+"src/whitemarket/_sync/buying.py" = ["PLR0913"]
+# ASYNC109: `wait_for(..., timeout=)` is the SDK_SPEC 3.4 name and a deadline of the whole wait, not a per-await timeout, see #0
+"src/whitemarket/_async/deals.py" = ["ASYNC109"]
 # ASYNC109: `poll(timeout)` and `wait_for_deal_event(..., timeout)` are the SDK_SPEC 3.11 names and a deadline of the
 # whole call, not a per-await timeout. PLR0913: the session takes one keyword per injected part, see #0
 "src/whitemarket/live/**" = ["ASYNC109", "PLR0913"]

@@ -4,39 +4,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import TypeVar
 
-from whitemarket._generated.enums import (
-    CatalogColor,
-    CSGOCategory,
-    CSGOExterior,
-    CSGOPhase,
-    CSGORarity,
-    CSGOStickerFilm,
-    CSGOSubcategory,
-    MarketOfferType,
-    MarketProductSortField,
-    SortType,
-    SteamApp,
-)
-from whitemarket._generated.enums import (
-    DeliveryPromise as WireDeliveryPromise,
-)
-from whitemarket._generated.enums import (
-    DeliveryType as WireDeliveryType,
-)
-from whitemarket._generated.enums import (
-    LogicOperand as WireLogicOperand,
-)
-from whitemarket._generated.input_types import MarketProductSearchInput, MarketProductSortInput
-from whitemarket._mappers.wire import (
-    assert_sendable,
-    present,
-    wire_date_range,
-    wire_enum,
-    wire_enums,
-    wire_money_range,
-)
+from whitemarket._mappers.wire import require_sendable
+from whitemarket._runtime.filter_checks import normalize_filter
 from whitemarket.models.enums import (
     App,
     Color,
@@ -55,7 +25,6 @@ from whitemarket.models.enums import (
 )
 from whitemarket.models.money import Money
 
-_S = TypeVar("_S")
 _TUPLE_FIELDS = (
     "name_hashes",
     "names",
@@ -79,13 +48,6 @@ class ProductSort:
 
     field: ProductSortField
     direction: SortDirection = SortDirection.ASC
-
-    def to_input(self) -> MarketProductSortInput:
-        """The generated input; used by the high-level API, not part of the public API."""
-        return MarketProductSortInput(
-            field=wire_enum(MarketProductSortField, self.field),
-            type_=wire_enum(SortType, self.direction),
-        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -157,84 +119,7 @@ class ProductFilter:
     super_deal: bool | None = None
 
     def __post_init__(self) -> None:
-        for name in _TUPLE_FIELDS:
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, tuple(value))
-        for name in _DECIMAL_FIELDS:
-            value = getattr(self, name)
-            if value is not None and not isinstance(value, Decimal):
-                raise TypeError(f"{name} must be a Decimal, not {type(value).__name__}")
-        for name in _DATE_FIELDS:
-            value = getattr(self, name)
-            if value is not None and value.tzinfo is None:
-                raise ValueError(f"{name} must be timezone-aware")
+        normalize_filter(self, tuples=_TUPLE_FIELDS, decimals=_DECIMAL_FIELDS, dates=_DATE_FIELDS)
         for price in (self.price_from, self.price_to):
             if price is not None:
-                assert_sendable(price)
-
-    def to_input(self) -> MarketProductSearchInput:
-        """The generated input; used by the high-level API, not part of the public API."""
-        return MarketProductSearchInput(
-            **present(
-                app_id=wire_enum(SteamApp, self.app),
-                color_enum=wire_enums(CatalogColor, self.colors),
-                created_at=wire_date_range(self.created_from, self.created_to),
-                csgo_charm=self.has_charm,
-                csgo_collection=self.collection,
-                csgo_exterior_enum=wire_enums(CSGOExterior, self.exteriors),
-                csgo_fade_from=self.fade_from,
-                csgo_fade_rank_from=self.fade_rank_from,
-                csgo_fade_rank_to=self.fade_rank_to,
-                csgo_fade_to=self.fade_to,
-                csgo_float_from=_plain(self.float_from),
-                csgo_float_to=_plain(self.float_to),
-                csgo_item_categories_exclude=wire_enums(CSGOCategory, self.exclude_categories),
-                csgo_item_category_enum=wire_enum(CSGOCategory, self.category),
-                csgo_item_skin=self.skin,
-                csgo_item_subcategories_exclude=wire_enums(
-                    CSGOSubcategory, self.exclude_subcategories
-                ),
-                csgo_item_subcategory_enum=wire_enum(CSGOSubcategory, self.subcategory),
-                csgo_pattern=self.pattern,
-                csgo_phase_enum=wire_enum(CSGOPhase, self.phase),
-                csgo_rarity_enum=wire_enums(CSGORarity, self.rarities),
-                csgo_souvenir=self.souvenir,
-                csgo_stat_trak=self.stat_trak,
-                csgo_sticker_film=wire_enum(CSGOStickerFilm, self.sticker_film),
-                csgo_sticker_names=_listed(self.sticker_names),
-                csgo_sticker_names_by_slot=_listed(self.sticker_names_by_slot),
-                csgo_sticker_names_operand=wire_enum(WireLogicOperand, self.sticker_names_operand),
-                csgo_sticker_player=self.sticker_player_id,
-                csgo_sticker_team=self.sticker_team_id,
-                csgo_sticker_tournament=self.sticker_tournament_id,
-                csgo_stickers=self.has_stickers,
-                delivery_promise=wire_enum(WireDeliveryPromise, self.delivery_promise),
-                delivery_type=wire_enum(WireDeliveryType, self.delivery_type),
-                distinct_values=self.distinct_values,
-                ids=_listed(self.ids),
-                is_popular=self.popular,
-                is_weapon_and_gear=self.weapon_and_gear,
-                name=self.name,
-                name_hash=self.name_hash,
-                name_strict=self.name_strict,
-                names=_listed(self.names),
-                names_hash=_listed(self.name_hashes),
-                offer_type=wire_enum(MarketOfferType, self.offer_type),
-                only_promo=self.only_promo,
-                price=wire_money_range(self.price_from, self.price_to),
-                sort=None if self.sort is None else self.sort.to_input(),
-                special=self.special,
-                store_slug=self.store_slug,
-                super_deal=self.super_deal,
-            )
-        )
-
-
-def _plain(value: Decimal | None) -> str | None:
-    """A wear bound as the plain decimal text the API takes (no exponent)."""
-    return None if value is None else format(value, "f")
-
-
-def _listed(values: Sequence[_S] | None) -> list[_S] | None:
-    return None if values is None else list(values)
+                require_sendable(price)

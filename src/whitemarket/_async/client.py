@@ -8,17 +8,24 @@ from typing import Self, TypedDict, Unpack, cast
 
 import httpx
 
+from whitemarket._async.buying import AsyncBuyingApi
 from whitemarket._async.credentials import (
     AsyncBearerCredentials,
     AsyncPartnerTokenCredentials,
     AsyncTokenRenewer,
 )
+from whitemarket._async.deals import AsyncDealsApi
 from whitemarket._async.exports import AsyncExportClient
 from whitemarket._async.graphql import AsyncGraphQLExecutor
+from whitemarket._async.inventory import AsyncInventoryApi
 from whitemarket._async.market import AsyncMarketApi
 from whitemarket._async.partner_token import AsyncPartnerTokenProvider
+from whitemarket._async.profile import AsyncProfileApi
+from whitemarket._async.selling import AsyncSellingApi
+from whitemarket._async.store import AsyncStoreApi
 from whitemarket._async.tokens import AsyncStaticAccessToken, AsyncTokenProvider, AsyncTokenStore
 from whitemarket._async.transport import AsyncGraphQLTransport, AsyncHttpClients
+from whitemarket._async.wallet import AsyncWalletApi
 from whitemarket._generated.client import AsyncGeneratedClient
 from whitemarket._runtime.credential_format import is_valid_bearer_token, is_valid_header_value
 from whitemarket._runtime.endpoints import Endpoints, require_user_agent_suffix
@@ -29,6 +36,7 @@ from whitemarket.exports.options import ExportOptions
 from whitemarket.live.async_session import AsyncLiveSession
 from whitemarket.live.options import LiveOptions, LiveTransport
 from whitemarket.retry import RetryPolicy
+from whitemarket.selling.options import DEFAULT_BATCH_SIZE, check_batch_size
 
 ENV_PARTNER = "WHITEMARKET_PARTNER_TOKEN"
 ENV_BASE_URL = "WHITEMARKET_BASE_URL"
@@ -71,6 +79,7 @@ class AsyncClientOptions(TypedDict, total=False):
     user_agent_suffix: str | None
     buy_reconciliation: BuyReconciliation | None
     max_response_bytes: int
+    selling_batch_size: int
 
 
 class AsyncWhiteMarketClient:
@@ -78,12 +87,15 @@ class AsyncWhiteMarketClient:
 
     Give exactly one of `partner_token` (preferred: the SDK exchanges it for access tokens and
     renews them), `access_token` (a JWT the caller renews) or `token_provider`. `token_store` goes
-    with `partner_token` only. An injected `http_client` is used as is for queries and mutations:
-    the SDK cannot set its timeouts or redirect policy (it must not follow redirects or resend a
-    request whose connection failed) and does not close it. TLS verification is always on.
+    with `partner_token` only. An injected `http_client` serves queries and mutations: the SDK
+    cannot set its timeouts (and trusts it not to resend a request whose connection failed) and
+    does not close it, but sends every request with `follow_redirects=False` and `auth=None`, so
+    the client's redirect policy and `auth` never apply. TLS verification is always on.
 
     Use it as `async with` or call `aclose()`: that closes the HTTP clients the SDK created.
     `exports` is the public export-file client (no authentication, its own HTTP client).
+    `selling_batch_size` is the items per request of the `*_many` methods of `selling` (default 100,
+    at least 1; the backend's maximum is unconfirmed, so a larger value may make the server reject).
 
     Raises `ValueError` for an invalid combination or value and `TypeError` for a wrong type.
     """
@@ -107,7 +119,9 @@ class AsyncWhiteMarketClient:
         user_agent_suffix: str | None = None,
         buy_reconciliation: BuyReconciliation | None = None,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        selling_batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
+        check_batch_size(selling_batch_size)
         credentials = [c for c in (partner_token, access_token, token_provider) if c is not None]
         if len(credentials) != 1:
             raise ValueError("pass exactly one of partner_token, access_token or token_provider")
@@ -156,6 +170,13 @@ class AsyncWhiteMarketClient:
             logger=logger,
         )
         self.market = AsyncMarketApi(self.generated)
+        self.buying = AsyncBuyingApi(self.generated, self._buy_reconciliation)
+        self.deals = AsyncDealsApi(self.generated)
+        self.selling = AsyncSellingApi(self.generated, selling_batch_size)
+        self.inventory = AsyncInventoryApi(self.generated)
+        self.wallet = AsyncWalletApi(self.generated)
+        self.profile = AsyncProfileApi(self.generated)
+        self.store = AsyncStoreApi(self.generated)
 
     @classmethod
     def from_env(cls, **options: Unpack[AsyncClientOptions]) -> Self:

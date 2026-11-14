@@ -10,9 +10,25 @@ import pytest
 
 from whitemarket._generated import enums as wire
 from whitemarket._runtime.enums import UnknownTolerantEnum
+from whitemarket.models import account_enums as account
 from whitemarket.models import enums as high
 from whitemarket.models.deal_status import DealStatus
 
+ACCOUNT_PAIRS = [
+    (account.WalletMethod, wire.WalletMethodEnum),
+    (account.DepositStatus, wire.WalletDepositStatus),
+    (account.WithdrawalStatus, wire.WalletWithdrawalStatus),
+    (account.TransferStatus, wire.WalletTransferStatus),
+    (account.TransactionStatus, wire.WalletTransactionStatus),
+    (account.TransactionFeeType, wire.WalletTransactionFeeType),
+    (account.TransactionSortField, wire.WalletTransactionSortField),
+    (account.StoreAvatar, wire.AvatarType),
+    (account.StoreBanner, wire.BannerType),
+    (account.AchievementCondition, wire.AchievementParamType),
+    (account.AchievementName, wire.AchievementType),
+    (account.AchievementStatus, wire.AchievementStatusType),
+    (account.AchievementKind, wire.AchievementTypeType),
+]
 PAIRS = [
     (high.App, wire.SteamApp),
     (high.Color, wire.CatalogColor),
@@ -31,9 +47,13 @@ PAIRS = [
     (high.Currency, wire.Currency),
     (high.ProductStatus, wire.MarketProductStatus),
     (high.DealAction, wire.MarketDealActionType),
+    (high.DealHistoryStatus, wire.MarketDealHistoryStatus),
+    (high.DealHistorySortField, wire.MarketDealHistorySortField),
+    (high.OfferCancelReason, wire.MarketDealExternalCancelReason),
     (DealStatus, wire.MarketDealStatus),
     (high.DealCancelReason, wire.MarketDealCancelReason),
     (high.TransactionReason, wire.WalletTransactionReason),
+    *ACCOUNT_PAIRS,
 ]
 KNOWN_ALL = [
     (DealStatus, wire.MarketDealStatus),
@@ -41,6 +61,10 @@ KNOWN_ALL = [
     (high.TransactionReason, wire.WalletTransactionReason),
     (high.ProductStatus, wire.MarketProductStatus),
     (high.DealAction, wire.MarketDealActionType),
+    (high.DealHistoryStatus, wire.MarketDealHistoryStatus),
+    (high.DealHistorySortField, wire.MarketDealHistorySortField),
+    (high.OfferCancelReason, wire.MarketDealExternalCancelReason),
+    *ACCOUNT_PAIRS,
 ]
 
 

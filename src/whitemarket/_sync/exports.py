@@ -12,25 +12,37 @@ data older than `max_age` is a `StaleExportError`. An argument error is a `Value
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
+from typing import BinaryIO, Literal, overload
 
 import httpx
 
-from whitemarket._concurrency import run_blocking
-from whitemarket._runtime.download_sink import Destination, open_sink
+from whitemarket._concurrency import acquire_blocking, run_blocking
+from whitemarket._runtime.body import BodyBytes, body_pieces
+from whitemarket._runtime.download_sink import abort_sink, open_sink
+from whitemarket._runtime.export_urls import (
+    DEFAULT_APP,
+    META_SUFFIX,
+    export_file_url,
+    max_age_seconds,
+)
 from whitemarket._sync.export_cache import ExportCache
 from whitemarket._sync.export_stream import RowStream, replay
-from whitemarket._sync.export_transport import ExportTransport, http_timeout
-from whitemarket._sync.transport import TransportSeams
+from whitemarket._sync.export_transport import (
+    ExportBody,
+    ExportTransport,
+    http_timeout,
+)
+from whitemarket._sync.seams import TransportSeams
 from whitemarket.errors.base import StaleExportError
+from whitemarket.exports._stream import iter_price_rows, iter_product_rows
 from whitemarket.exports.conditional import NotModified
 from whitemarket.exports.kinds import ExportFormat, ExportKind
 from whitemarket.exports.meta import ExportMeta, parse_meta
 from whitemarket.exports.options import ExportOptions
 from whitemarket.exports.price_list import PriceList
 from whitemarket.exports.rows import PriceRow, ProductRow
-from whitemarket.exports.stream import iter_price_rows, iter_product_rows
-from whitemarket.exports.urls import DEFAULT_APP, META_SUFFIX, export_file_url, max_age_seconds
 from whitemarket.exports.window import ExportWindow
 
 _JSON = ExportFormat.JSON
@@ -40,9 +52,10 @@ class ExportClient:
     """Downloads the public export files of `export.white.market`.
 
     Without `http_client` the SDK creates an httpx client with the connect and idle timeouts of
-    `options` and no total timeout, and closes it in `aclose()`. An injected client is used as is:
-    the SDK cannot set its timeouts, it must not follow redirects (the SDK follows them itself,
-    under the rules of SDK_SPEC 3.10) and it must carry no credential; it stays open. TLS
+    `options` and no total timeout, and closes it in `aclose()`. An injected client keeps its
+    timeouts and stays open, but every request is sent with `follow_redirects=False`, `auth=None`
+    and none of the client's default headers or cookies (the SDK follows redirects itself, under
+    the rules of SDK_SPEC 3.10). TLS
     verification is always on.
 
     `cache` holds the `ETag` and `Last-Modified` of the files fetched with `conditional=True`
@@ -82,6 +95,26 @@ class ExportClient:
         """The freshness sidecar `<file>.meta.json` of an export file."""
         return self._fetch_meta(self._file_url(kind, app, window, format))
 
+    @overload
+    def prices(
+        self,
+        app: int = DEFAULT_APP,
+        window: ExportWindow | None = None,
+        *,
+        conditional: Literal[False] = False,
+        max_age: timedelta | float | None = None,
+    ) -> PriceList: ...
+
+    @overload
+    def prices(
+        self,
+        app: int = DEFAULT_APP,
+        window: ExportWindow | None = None,
+        *,
+        conditional: bool,
+        max_age: timedelta | float | None = None,
+    ) -> PriceList | NotModified: ...
+
     def prices(
         self,
         app: int = DEFAULT_APP,
@@ -108,8 +141,8 @@ class ExportClient:
             body = fetched
         else:
             body = self._transport.get(url)
-        data = body.read(self._options.max_body_bytes)
-        price_list = PriceList.from_chunks([data])
+        data = self._read_whole(body)
+        price_list = PriceList(iter_price_rows(body_pieces(data)))
         if conditional:
             self._transport.remember(body)
         return price_list
@@ -130,8 +163,8 @@ class ExportClient:
         url = self._file_url(ExportKind.PRICES, app, window, _JSON)
         self._assert_fresh(url, max_age)
         body = self._transport.get(url)
-        data = body.read(self._options.max_body_bytes)
-        return RowStream(replay(list(iter_price_rows([data]))), body)
+        data = self._read_whole(body)
+        return RowStream(replay(list(iter_price_rows(body_pieces(data)))), body)
 
     def stream_products(
         self,
@@ -160,7 +193,7 @@ class ExportClient:
         app: int,
         window: ExportWindow | None,
         format: ExportFormat,
-        destination: Destination,
+        destination: str | os.PathLike[str] | BinaryIO,
     ) -> None:
         """Write the decoded file to `destination` as it arrives: no memory held, no size limit.
 
@@ -170,7 +203,7 @@ class ExportClient:
         unrewound. A destination that cannot be written is a `GeneralExportError`.
         """
         url = self._file_url(kind, app, window, format)
-        sink = run_blocking(open_sink, destination)
+        sink = acquire_blocking(open_sink, abort_sink, destination)
         body = None
         try:
             body = self._transport.get(url)
@@ -203,9 +236,12 @@ class ExportClient:
     ) -> str:
         return export_file_url(self._options.base_url, kind, app, window, format)
 
+    def _read_whole(self, body: ExportBody) -> BodyBytes:
+        return body.read(self._options.max_body_bytes)
+
     def _fetch_meta(self, file_url: str) -> ExportMeta:
         body = self._transport.get(file_url + META_SUFFIX)
-        return parse_meta(body.read(self._options.max_body_bytes))
+        return parse_meta(self._read_whole(body))
 
     def _assert_fresh(self, file_url: str, max_age: timedelta | float | None) -> None:
         seconds = max_age_seconds(max_age)

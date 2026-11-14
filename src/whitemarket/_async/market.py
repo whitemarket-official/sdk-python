@@ -5,16 +5,11 @@ Every method is a read-only query, so the transport retries it on transient fail
 
 from collections.abc import AsyncIterator
 
-from whitemarket._async.pagination import iterate_pages
+from whitemarket._async.pagination import forward_pagination, iterate_pages
 from whitemarket._generated.client import AsyncGeneratedClient
-from whitemarket._generated.input_types import (
-    ForwardPaginationInput,
-    MarketProductSearchInput,
-    SteamLinkInput,
-)
+from whitemarket._generated.input_types import MarketProductSearchInput, SteamLinkInput
 from whitemarket._mappers.products import map_product, map_product_page, map_sticker_suggestions
-from whitemarket._mappers.wire import present
-from whitemarket._runtime.unset import UNSET, UnsetType
+from whitemarket._mappers.wire import search_argument
 from whitemarket.market.filter import ProductFilter
 from whitemarket.models.page import Page, PageRequest
 from whitemarket.models.products import Product, StickerSuggestions
@@ -44,8 +39,8 @@ class AsyncMarketApi:
         other `WhiteMarketError` subclasses for transport, HTTP and GraphQL failures.
         """
         result = await self._generated.market_list(
-            forward_pagination=_forward_pagination(page),
-            search=filter.to_input() if isinstance(filter, ProductFilter) else filter or UNSET,
+            forward_pagination=forward_pagination(page),
+            search=search_argument(filter),
         )
         return map_product_page(result.market_list, _LIST)
 
@@ -94,10 +89,3 @@ class AsyncMarketApi:
         """
         result = await self._generated.market_trade_url(SteamLinkInput(value=url))
         return result.market_trade_url
-
-
-def _forward_pagination(page: PageRequest | None) -> ForwardPaginationInput | UnsetType:
-    """No `forwardPagination` variable at all when the request names neither a size nor a cursor."""
-    if page is None or (page.first is None and page.after is None):
-        return UNSET
-    return ForwardPaginationInput(**present(first=page.first, after=page.after))

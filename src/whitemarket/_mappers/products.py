@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from whitemarket._mappers.common import (
     ConnectionSource,
@@ -13,7 +13,8 @@ from whitemarket._mappers.common import (
     money,
     optional_enum,
 )
-from whitemarket.models.decimals import parse_decimal
+from whitemarket._runtime.decimals import parse_decimal
+from whitemarket.errors import DecodeError
 from whitemarket.models.enums import DeliveryPromise, DeliveryType, ProductStatus, StickerFilm
 from whitemarket.models.page import Page
 from whitemarket.models.products import (
@@ -165,6 +166,23 @@ def map_product_history(source: ProductHistorySource, path: Path) -> ProductHist
         instance_id=source.instance_id,
         item=map_inventory_item(source.params, source.description, (*path, "params")),
     )
+
+
+def map_batch_product(product: object, path: Path) -> Product | ProductHistory | None:
+    """The product of a `*_multiple` row: a live listing, an archived one, or None.
+
+    None for an absent product, a type this SDK does not know, and a product whose values cannot
+    be read (a malformed amount): the outcome the server reported for the row stands either way.
+    """
+    kind: object = getattr(product, "typename__", None)
+    try:
+        if kind == "MarketProduct":
+            return map_product(cast("ProductSource", product), path)
+        if kind == "MarketProductHistory":
+            return map_product_history(cast("ProductHistorySource", product), path)
+    except DecodeError:
+        return None
+    return None
 
 
 def map_inventory_item(item: object, description: object, path: Path) -> InventoryItem | None:

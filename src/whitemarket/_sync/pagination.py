@@ -4,9 +4,12 @@
 from collections.abc import Iterator
 from typing import Protocol, TypeVar
 
+from whitemarket._generated.input_types import ForwardPaginationInput
 from whitemarket._mappers.common import Path
+from whitemarket._mappers.wire import present
+from whitemarket._runtime.unset import UNSET, UnsetType
 from whitemarket.errors import DecodeError
-from whitemarket.models.page import Page
+from whitemarket.models.page import Page, PageRequest
 
 _T_co = TypeVar("_T_co", covariant=True)
 _T = TypeVar("_T")
@@ -38,3 +41,10 @@ def iterate_pages(fetch_page: PageFetcher[_T], path: Path) -> Iterator[_T]:
                 (*path, "pageInfo", "endCursor"),
             )
         cursor = page.end_cursor
+
+
+def forward_pagination(page: PageRequest | None) -> ForwardPaginationInput | UnsetType:
+    """No `forwardPagination` variable at all when the request names neither a size nor a cursor."""
+    if page is None or (page.first is None and page.after is None):
+        return UNSET
+    return ForwardPaginationInput(**present(first=page.first, after=page.after))

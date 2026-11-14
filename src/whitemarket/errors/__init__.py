@@ -1,6 +1,8 @@
 """Error hierarchy of the SDK (SDK_SPEC 1.5)."""
 
 from whitemarket.errors.base import (
+    BatchIncompleteError,
+    DealWaitTimeoutError,
     DecodeError,
     ExportError,
     GeneralExportError,
@@ -30,6 +32,8 @@ from whitemarket.errors.http import (
 __all__ = [
     "AuthenticationError",
     "BadRequestError",
+    "BatchIncompleteError",
+    "DealWaitTimeoutError",
     "DecodeError",
     "ErrorCategory",
     "ExportError",

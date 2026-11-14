@@ -1,0 +1,139 @@
+"""`client.profile`: the partner's own account, Steam link, Steam proxy and token, email and
+referrer (SDK_SPEC 3.9).
+
+`get()`, `id()` and `steam_proxy()` are queries, which the transport retries on transient failures
+(SDK_SPEC 1.4). Every other method is a mutation: sent exactly once and never retried (CLAUDE.md
+rule 2), and a failure propagates as it is. No money moves here, so there is no "outcome unknown"
+wrapper; the caller may repeat a call after checking the state with `get()`.
+
+The Steam proxy URL and the Steam token payload are secrets: they are taken and returned as
+`Secret` and revealed only when the request body is built (the transport never logs request
+bodies). The email, the confirmation code and the referrer code are plain strings.
+"""
+
+from typing import TypeVar
+
+from whitemarket._generated.client import AsyncGeneratedClient
+from whitemarket._generated.input_types import (
+    PersonEmailInput,
+    ProxyInput,
+    ReferrerCodeInput,
+    ReferrerInput,
+    SteamLinkInput,
+)
+from whitemarket._mappers.profile import map_profile
+from whitemarket._mappers.wire import present
+from whitemarket._runtime.secret import Secret
+from whitemarket._runtime.unset import UNSET, UnsetType
+from whitemarket.models.profile import Profile
+
+_T = TypeVar("_T")
+
+
+def _optional(value: _T | None) -> _T | UnsetType:
+    """A value left out of the request when it is None (a `0` is a value and is sent)."""
+    return UNSET if value is None else value
+
+
+def _require_secret(name: str, value: object) -> Secret:
+    if not isinstance(value, Secret):
+        raise TypeError(f"{name} must be a Secret, not {type(value).__name__}")
+    return value
+
+
+class AsyncProfileApi:
+    """`client.profile`."""
+
+    def __init__(self, generated: AsyncGeneratedClient) -> None:
+        self._generated = generated
+
+    async def id(self) -> str:
+        """The person id of the account (`profile_id`)."""
+        return (await self._generated.profile_id()).profile_id
+
+    async def get(self) -> Profile:
+        """The account (`person_profile`). `Profile.steam_trade_url` is a `Secret`."""
+        answer = (await self._generated.person_profile()).person_profile
+        return map_profile(answer, answer.trading_competition_stat)
+
+    async def set_trade_url(self, url: str) -> bool:
+        """Set the Steam trade URL (`profile_steam_link`); returns the server's answer."""
+        return (
+            await self._generated.profile_steam_link(SteamLinkInput(value=url))
+        ).profile_steam_link
+
+    async def steam_proxy(self) -> Secret | None:
+        """The Steam proxy URL with its credentials (`profile_steam_proxy_get`); `None` when none
+        is set (null or empty)."""
+        proxy = (await self._generated.profile_steam_proxy_get()).profile_steam_proxy_get
+        return proxy if proxy is not None and proxy.reveal() else None
+
+    async def set_steam_proxy(self, proxy: Secret, ttl: int | None = None) -> bool:
+        """Set the Steam proxy (`profile_steam_proxy_set`); returns the server's answer.
+
+        `ttl` is passed to the server unchanged (not validated; the API documents neither its unit
+        nor its meaning) and left out of the request when None. Raises `TypeError` when `proxy` is
+        not a `Secret`.
+        """
+        secret = _require_secret("proxy", proxy)
+        answer = await self._generated.profile_steam_proxy_set(
+            ProxyInput(value=secret.reveal()), _optional(ttl)
+        )
+        return answer.profile_steam_proxy_set
+
+    async def delete_steam_proxy(self) -> bool:
+        """Remove the Steam proxy (`profile_steam_proxy_delete`); returns the server's answer."""
+        return (await self._generated.profile_steam_proxy_delete()).profile_steam_proxy_delete
+
+    async def set_steam_token(
+        self, payload: Secret, own_proxy_required: bool = False, ttl: int | None = None
+    ) -> bool:
+        """Store the Steam token payload (`profile_token_set`); returns the server's answer.
+
+        `own_proxy_required` is always sent (the server's default is false). `ttl` is passed to
+        the server unchanged and left out of the request when None. Raises `TypeError` when
+        `payload` is not a `Secret`.
+        """
+        secret = _require_secret("payload", payload)
+        answer = await self._generated.profile_token_set(
+            secret.reveal(), own_proxy_required, _optional(ttl)
+        )
+        return answer.profile_token_set
+
+    async def check_steam_token(self) -> int | None:
+        """Ask the server to check the stored Steam token (`profile_token_check`); a mutation,
+        sent once. Returns the server's Int unchanged: the API does not document its meaning."""
+        return (await self._generated.profile_token_check()).profile_token_check
+
+    async def delete_steam_token(self) -> bool:
+        """Remove the stored Steam token (`profile_token_delete`); returns the server's answer."""
+        return (await self._generated.profile_token_delete()).profile_token_delete
+
+    async def set_email(self, email: str) -> Profile:
+        """Set the email (`email_set`); the server sends a confirmation code to it."""
+        answer = (await self._generated.email_set(PersonEmailInput(value=email))).email_set
+        return map_profile(answer, answer.trading_competition_stat)
+
+    async def confirm_email(self, code: str, sign: str | None = None) -> Profile:
+        """Confirm the email with the code from the message (`email_confirm`)."""
+        answer = (await self._generated.email_confirm(code, _optional(sign))).email_confirm
+        return map_profile(answer, answer.trading_competition_stat)
+
+    async def resend_email_confirmation(self) -> Profile:
+        """Send the confirmation message again (`email_confirmation_resend`)."""
+        answer = (await self._generated.email_confirmation_resend()).email_confirmation_resend
+        return map_profile(answer, answer.trading_competition_stat)
+
+    async def link_referrer(self, code: str, tag: str | None = None) -> bool:
+        """Link the account to the referrer with this code (`profile_referrer`); returns the
+        server's answer."""
+        referrer = ReferrerInput(
+            **present(referrer_code=ReferrerCodeInput(value=code), referrer_tag=tag)
+        )
+        return (await self._generated.profile_referrer(referrer)).profile_referrer
+
+    async def change_referrer_code(self, code: str) -> bool:
+        """Change the account's own referrer code (`profile_referrer_code`); returns the server's
+        answer."""
+        answer = await self._generated.profile_referrer_code(ReferrerCodeInput(value=code))
+        return answer.profile_referrer_code

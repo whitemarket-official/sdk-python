@@ -2,12 +2,14 @@
 
 import asyncio
 import inspect
+import math
 from typing import Any
 
 import httpx
 import pytest
 
-from support.flavors import FLAVORS, Flavor, jwt
+from support.clients import ClientRig
+from support.flavors import Flavor, jwt
 from support.http import Script, data, reply
 from support.rigs import PARTNER, T0, body_of, fresh_token, token_answer
 from whitemarket import (
@@ -25,33 +27,12 @@ OTHER = "OTHER-PARTNER"
 ACCESS = jwt(exp=int(T0.timestamp()) + 3600, jti="given")
 
 
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "flavor" in metafunc.fixturenames:
-        metafunc.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
-
-
-class Made:
-    """A client under test and the scripted httpx client it runs on."""
-
-    def __init__(self, flavor: Flavor, *outcomes: Any, **options: Any) -> None:
-        self.flavor = flavor
-        self.script = Script(*outcomes)
-        self.http = flavor.mock_http(self.script)
-        self.client = flavor.cls("client", "WhiteMarketClient")(http_client=self.http, **options)
-
-    def call(self, result: Any) -> Any:
-        return self.flavor.run(result)
-
-    def close(self) -> None:
-        self.flavor.close(self.http)
-
-
 @pytest.fixture
 def make(flavor: Flavor) -> Any:
-    made: list[Made] = []
+    made: list[ClientRig] = []
 
-    def build(*outcomes: Any, **options: Any) -> Made:
-        item = Made(flavor, *outcomes, **options)
+    def build(*outcomes: Any, **options: Any) -> ClientRig:
+        item = ClientRig(flavor, *outcomes, static_token=False, **options)
         made.append(item)
         return item
 
@@ -290,11 +271,21 @@ def test_a_credential_of_the_wrong_type_is_a_type_error(
         pytest.param(lambda: BuyReconciliation(delay=20.1), id="delay above 20"),
         pytest.param(lambda: BuyReconciliation(attempts=0), id="no reconciliation attempts"),
         pytest.param(lambda: BuyReconciliation(interval=-1), id="negative interval"),
+        pytest.param(lambda: BuyReconciliation(delay=math.nan), id="NaN delay"),
+        pytest.param(lambda: BuyReconciliation(delay=math.inf), id="infinite delay"),
+        pytest.param(lambda: BuyReconciliation(interval=math.inf), id="infinite interval"),
+        pytest.param(lambda: BuyReconciliation(interval=math.nan), id="NaN interval"),
     ],
 )
 def test_option_objects_validate_themselves(factory: Any) -> None:
     with pytest.raises(ValueError, match=r"."):
         factory()
+
+
+@pytest.mark.parametrize("attempts", [2.5, True, "3", None])
+def test_reconciliation_attempts_are_a_whole_number(attempts: Any) -> None:
+    with pytest.raises(TypeError, match="attempts"):
+        BuyReconciliation(attempts=attempts)
 
 
 def test_the_smallest_valid_options_are_accepted(make: Any) -> None:

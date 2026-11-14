@@ -14,22 +14,30 @@ from whitemarket._runtime.credential_format import is_valid_bearer_token, is_val
 from whitemarket._runtime.endpoints import Endpoints, require_user_agent_suffix
 from whitemarket._runtime.secret import Secret
 from whitemarket._runtime.transport_config import TransportConfig, build_user_agent
+from whitemarket._sync.buying import BuyingApi
 from whitemarket._sync.credentials import (
     BearerCredentials,
     PartnerTokenCredentials,
     TokenRenewer,
 )
+from whitemarket._sync.deals import DealsApi
 from whitemarket._sync.exports import ExportClient
 from whitemarket._sync.graphql import GraphQLExecutor
+from whitemarket._sync.inventory import InventoryApi
 from whitemarket._sync.market import MarketApi
 from whitemarket._sync.partner_token import PartnerTokenProvider
+from whitemarket._sync.profile import ProfileApi
+from whitemarket._sync.selling import SellingApi
+from whitemarket._sync.store import StoreApi
 from whitemarket._sync.tokens import StaticAccessToken, TokenProvider, TokenStore
 from whitemarket._sync.transport import GraphQLTransport, HttpClients
+from whitemarket._sync.wallet import WalletApi
 from whitemarket.config import DEFAULT_MAX_RESPONSE_BYTES, BuyReconciliation, Timeouts
 from whitemarket.exports.options import ExportOptions
 from whitemarket.live.options import LiveOptions, LiveTransport
 from whitemarket.live.session import LiveSession
 from whitemarket.retry import RetryPolicy
+from whitemarket.selling.options import DEFAULT_BATCH_SIZE, check_batch_size
 
 ENV_PARTNER = "WHITEMARKET_PARTNER_TOKEN"
 ENV_BASE_URL = "WHITEMARKET_BASE_URL"
@@ -72,6 +80,7 @@ class ClientOptions(TypedDict, total=False):
     user_agent_suffix: str | None
     buy_reconciliation: BuyReconciliation | None
     max_response_bytes: int
+    selling_batch_size: int
 
 
 class WhiteMarketClient:
@@ -79,12 +88,15 @@ class WhiteMarketClient:
 
     Give exactly one of `partner_token` (preferred: the SDK exchanges it for access tokens and
     renews them), `access_token` (a JWT the caller renews) or `token_provider`. `token_store` goes
-    with `partner_token` only. An injected `http_client` is used as is for queries and mutations:
-    the SDK cannot set its timeouts or redirect policy (it must not follow redirects or resend a
-    request whose connection failed) and does not close it. TLS verification is always on.
+    with `partner_token` only. An injected `http_client` serves queries and mutations: the SDK
+    cannot set its timeouts (and trusts it not to resend a request whose connection failed) and
+    does not close it, but sends every request with `follow_redirects=False` and `auth=None`, so
+    the client's redirect policy and `auth` never apply. TLS verification is always on.
 
     Use it as `async with` or call `aclose()`: that closes the HTTP clients the SDK created.
     `exports` is the public export-file client (no authentication, its own HTTP client).
+    `selling_batch_size` is the items per request of the `*_many` methods of `selling` (default 100,
+    at least 1; the backend's maximum is unconfirmed, so a larger value may make the server reject).
 
     Raises `ValueError` for an invalid combination or value and `TypeError` for a wrong type.
     """
@@ -108,7 +120,9 @@ class WhiteMarketClient:
         user_agent_suffix: str | None = None,
         buy_reconciliation: BuyReconciliation | None = None,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        selling_batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
+        check_batch_size(selling_batch_size)
         credentials = [c for c in (partner_token, access_token, token_provider) if c is not None]
         if len(credentials) != 1:
             raise ValueError("pass exactly one of partner_token, access_token or token_provider")
@@ -157,6 +171,13 @@ class WhiteMarketClient:
             logger=logger,
         )
         self.market = MarketApi(self.generated)
+        self.buying = BuyingApi(self.generated, self._buy_reconciliation)
+        self.deals = DealsApi(self.generated)
+        self.selling = SellingApi(self.generated, selling_batch_size)
+        self.inventory = InventoryApi(self.generated)
+        self.wallet = WalletApi(self.generated)
+        self.profile = ProfileApi(self.generated)
+        self.store = StoreApi(self.generated)
 
     @classmethod
     def from_env(cls, **options: Unpack[ClientOptions]) -> Self:

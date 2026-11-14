@@ -31,7 +31,7 @@ Option 3.
   `Deal`, `DealState`, `BuyResult` (`whitemarket.models`). Collections are tuples (a frozen model must not hold a
   mutable list); `Page` is covariant so a page of a subtype is a page of the base. Ids that are 64-bit numbers
   (`asset_id`, `class_id`, `instance_id`) stay `str`; money and wear (`InventoryItem.float`, `Sticker.wear`) are
-  `Decimal` parsed from the wire text by one function (`models/decimals.py`: plain decimal text only, a malformed
+  `Decimal` parsed from the wire text by one function (`_runtime/decimals.py`: plain decimal text only, a malformed
   value is a `DecodeError` with the JSON path and a fixed reason that never carries the value).
 - The receiver trade URL of a deal is a `Secret` and is left out of `repr()` (SDK_SPEC 3.4 rule 11).
 - Enums: every enum a high-level model or filter uses is a `UnknownTolerantEnum` (value-compared `StrEnum` with an

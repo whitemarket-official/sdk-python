@@ -5,9 +5,9 @@ from decimal import Decimal
 
 import pytest
 
+from whitemarket._runtime.decimals import parse_decimal
 from whitemarket.errors import DecodeError
 from whitemarket.models import Money, Page, PageRequest
-from whitemarket.models.decimals import parse_decimal
 
 
 def test_a_page_iterates_its_items_and_has_a_length() -> None:

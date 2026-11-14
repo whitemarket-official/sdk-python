@@ -6,6 +6,7 @@ from typing import Any, Final, cast
 from whitemarket._async.credentials import AsyncCredentials
 from whitemarket._async.transport import AsyncGraphQLTransport
 from whitemarket._runtime import json_codec
+from whitemarket._runtime.body import BodyBytes
 from whitemarket._runtime.operation import OperationType, effective_operation_type
 from whitemarket.errors.base import DecodeError
 from whitemarket.errors.graphql import GraphQLError
@@ -46,7 +47,7 @@ class AsyncGraphQLExecutor:
 
     async def _post_with_one_replay(
         self, name: str, operation_type: OperationType, body: bytes
-    ) -> bytes:
+    ) -> BodyBytes:
         headers = await self._credentials.headers(name)
         try:
             return await self._transport.post(name, operation_type, body, headers)
@@ -71,7 +72,7 @@ def _encode(document: str, operation_name: str | None, variables: Mapping[str, o
     raise ValueError("the request holds text that is not valid Unicode")
 
 
-def _decode_body(body: bytes) -> object:
+def _decode_body(body: BodyBytes) -> object:
     failure = ""
     try:
         return json_codec.decode(body)
@@ -80,7 +81,7 @@ def _decode_body(body: bytes) -> object:
     raise DecodeError(failure)
 
 
-def _data_or_raise(body: bytes) -> dict[str, Any]:
+def _data_or_raise(body: BodyBytes) -> dict[str, Any]:
     response = _decode_body(body)
     if not isinstance(response, dict):
         raise DecodeError("the response is not a JSON object")
@@ -95,7 +96,9 @@ def _data_or_raise(body: bytes) -> dict[str, Any]:
         raise DecodeError("expected a list", ("errors",))
     if errors:
         raise GraphQLError.from_payload(
-            cast("list[object]", errors), _without_credentials(cast("dict[str, Any] | None", data))
+            cast("list[object]", errors),
+            _without_credentials(cast("dict[str, Any] | None", data)),
+            data_present="data" in fields,
         )
     if data is None:
         raise DecodeError("missing in a response without errors", ("data",))
@@ -103,7 +106,9 @@ def _data_or_raise(body: bytes) -> dict[str, Any]:
 
 
 def _without_credentials(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    # Only the credential values go; the shape stays. A credential-only `data` object becomes `{}`,
+    # never None: None means "the response had no data", and the rejection classification
+    # (`is_mutation_rejection`) must not read a stripped answer as one (SDK_SPEC 3.3 rule 6).
     if data is None:
         return None
-    kept = {name: value for name, value in data.items() if name not in _CREDENTIAL_FIELDS}
-    return kept or None
+    return {name: value for name, value in data.items() if name not in _CREDENTIAL_FIELDS}

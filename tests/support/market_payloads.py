@@ -204,3 +204,18 @@ def deal_state(**overrides: Any) -> dict[str, Any]:
         }
     )
     return {**base, **overrides}
+
+
+def deal_as(model: Any, **overrides: Any) -> dict[str, Any]:
+    """A deal in progress shaped like `model` (`MarketBuyMarketBuy`, a list element, ...): the
+    fields of `deal()` that `model` has, every other field at its smallest valid value."""
+    base = model_json(model)
+    base.update({name: value for name, value in deal().items() if name in base})
+    return {**base, **overrides}
+
+
+def archived_as(model: Any, **overrides: Any) -> dict[str, Any]:
+    """An archived deal shaped like `model` (a history page node, a cancel answer, ...)."""
+    base = model_json(model)
+    base.update({name: value for name, value in archived_deal().items() if name in base})
+    return {**base, **overrides}

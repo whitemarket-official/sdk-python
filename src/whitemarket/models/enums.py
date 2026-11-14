@@ -358,6 +358,51 @@ class DealAction(UnknownTolerantEnum):
     SELL = "SELL"
 
 
+class DealHistoryStatus(UnknownTolerantEnum):
+    """The status filter of the deal history (`DealHistoryFilter.status`).
+
+    A value the schema adds later decodes to a pseudo-member with the raw value
+    (`is_unknown`) and is reachable through a raw input until this enum learns it.
+    """
+
+    BOUGHT = "BOUGHT"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+    EXPIRED = "EXPIRED"
+    SOLD = "SOLD"
+
+
+class DealHistorySortField(UnknownTolerantEnum):
+    """What the deal history is ordered by (`DealHistorySort.field`).
+
+    A value the schema adds later decodes to a pseudo-member with the raw value
+    (`is_unknown`) and is reachable through a raw input until this enum learns it.
+    """
+
+    CREATED_AT = "CREATED_AT"
+    PRICE = "PRICE"
+
+
+class OfferCancelReason(UnknownTolerantEnum):
+    """Why a seller cancels sending a Steam offer (`deals.cancel_sending_offer()`).
+
+    Choose the true reason: a wrong one can lead to sanctions (WHITEMARKET_API.md 7). A value the
+    schema adds later decodes to a pseudo-member with the raw value (`is_unknown`) and is reachable
+    through the generated client until this enum learns it.
+    """
+
+    BUYER_INVENTORY_PRIVATE = "BUYER_INVENTORY_PRIVATE"
+    BUYER_NOT_TRADEABLE = "BUYER_NOT_TRADEABLE"
+    BUYER_STEAM_FAMILY_VIEW = "BUYER_STEAM_FAMILY_VIEW"
+    SELLER_NOT_TRADEABLE = "SELLER_NOT_TRADEABLE"
+    SKIN_UNAVAILABLE = "SKIN_UNAVAILABLE"
+    STEAM_ISSUES = "STEAM_ISSUES"
+    STEAM_ISSUES_15 = "STEAM_ISSUES_15"
+    STEAM_SENDING_LIMIT_EXCEED = "STEAM_SENDING_LIMIT_EXCEED"
+    STEAM_VAC_BAN = "STEAM_VAC_BAN"
+    UNKNOWN = "UNKNOWN"
+
+
 class TransactionReason(UnknownTolerantEnum):
     """Why a wallet transaction happened.
 

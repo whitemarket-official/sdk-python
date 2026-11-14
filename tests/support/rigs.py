@@ -90,7 +90,7 @@ class Stack:
         self.transport = flavor.cls("transport", "GraphQLTransport")(
             clients,
             config,
-            seams=flavor.cls("transport", "TransportSeams")(
+            seams=flavor.cls("seams", "TransportSeams")(
                 clock=self.clock, sleeper=flavor.sleeper([]), random=lambda: 0.0
             ),
         )

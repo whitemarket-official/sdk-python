@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from whitemarket._mappers.wire import product_search_input, product_sort_input
 from whitemarket._runtime.json_codec import to_plain
 from whitemarket.market import ProductFilter, ProductSort
 from whitemarket.models import (
@@ -33,7 +34,7 @@ NAIVE = datetime(2026, 11, 1, tzinfo=UTC).replace(tzinfo=None)
 
 def wire(flt: ProductFilter) -> Any:
     """What the transport would send for this filter."""
-    return to_plain(flt.to_input())
+    return to_plain(product_search_input(flt))
 
 
 def test_an_empty_filter_sends_nothing() -> None:
@@ -268,13 +269,15 @@ def test_an_enum_value_the_schema_does_not_accept_is_refused_when_sent() -> None
     unknown_app = App("UNKNOWN")  # declared by the schema, deliberately not an App member
 
     with pytest.raises(ValueError, match="FUTURE_PHASE"):
-        ProductFilter(phase=unknown_phase).to_input()
+        product_search_input(ProductFilter(phase=unknown_phase))
     with pytest.raises(ValueError, match="UNKNOWN"):
-        ProductFilter(app=unknown_app).to_input()
+        product_search_input(ProductFilter(app=unknown_app))
     with pytest.raises(ValueError, match="ZZZ"):
-        ProductFilter(exclude_categories=[ItemCategory.CASE, ItemCategory("ZZZ")]).to_input()
+        product_search_input(
+            ProductFilter(exclude_categories=[ItemCategory.CASE, ItemCategory("ZZZ")])
+        )
 
 
 def test_a_sort_with_an_unknown_field_is_refused_when_sent() -> None:
     with pytest.raises(ValueError, match="NEW_FIELD"):
-        ProductSort(field=ProductSortField("NEW_FIELD")).to_input()
+        product_sort_input(ProductSort(field=ProductSortField("NEW_FIELD")))

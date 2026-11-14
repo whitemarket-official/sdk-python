@@ -1,7 +1,8 @@
 """Public client settings that are plain values (SDK_SPEC 2)."""
 
+import math
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 
 from whitemarket.retry import RetryPolicy
 
@@ -42,9 +43,14 @@ class BuyReconciliation:
     interval: float = 5.0
 
     def __post_init__(self) -> None:
+        # NaN and infinity fail every range check below on their own (a NaN comparison is False).
         if not _MIN_DELAY <= self.delay <= _MAX_DELAY:
             raise ValueError("delay must be between 10 and 20 seconds")
+        # A `bool` is an `int` to Python and 2.5 attempts are none: a loop count is a whole number.
+        attempts = cast("object", self.attempts)
+        if not isinstance(attempts, int) or isinstance(attempts, bool):
+            raise TypeError("attempts must be an int")
         if self.attempts < 1:
             raise ValueError("attempts must be at least 1")
-        if self.interval < 0:
-            raise ValueError("interval must not be negative")
+        if not (math.isfinite(self.interval) and self.interval >= 0):
+            raise ValueError("interval must be a finite number of seconds, not negative")

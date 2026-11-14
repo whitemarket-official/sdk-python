@@ -6,8 +6,8 @@ import httpx
 import pytest
 import respx
 
-from support.exports import PRICE_ROW, json_body
-from support.flavors import FLAVORS, Flavor, jwt
+from support.exports import PRICES_BODY
+from support.flavors import Flavor, each_flavor, jwt
 from support.http import Script, data
 from support.rigs import PARTNER, T0, token_answer
 from whitemarket import (
@@ -19,16 +19,12 @@ from whitemarket import (
 )
 from whitemarket.errors import TransportError
 
-PRICES = json_body([PRICE_ROW])
 ACCESS = jwt(exp=int(T0.timestamp()) + 3600, jti="exports")
 EXPORT_URL = "https://export.white.market/v1/prices/730.json"
 
 
 def close(flavor: Flavor, client: Any) -> None:
     flavor.run(client.aclose() if flavor.is_async else client.close())
-
-
-each_flavor = pytest.mark.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @each_flavor
@@ -39,7 +35,7 @@ def test_export_requests_carry_no_credential_even_after_an_authenticated_call(
     http = flavor.mock_http(graphql)
     client = flavor.cls("client", "WhiteMarketClient")(partner_token=PARTNER, http_client=http)
     with respx.mock(assert_all_called=False) as router:
-        route = router.get(EXPORT_URL).respond(200, content=PRICES)
+        route = router.get(EXPORT_URL).respond(200, content=PRICES_BODY)
 
         assert flavor.run(client.auth.ping()) == "pong"
         prices = flavor.run(client.exports.prices())
@@ -81,7 +77,7 @@ def test_the_export_client_uses_the_export_base_url_and_the_clients_settings(
 def test_closing_the_client_closes_the_export_client(flavor: Flavor) -> None:
     client = flavor.cls("client", "WhiteMarketClient")(access_token=ACCESS)
     with respx.mock(assert_all_called=False) as router:
-        router.get(EXPORT_URL).respond(200, content=PRICES)
+        router.get(EXPORT_URL).respond(200, content=PRICES_BODY)
         close(flavor, client)
 
         with pytest.raises(TransportError):

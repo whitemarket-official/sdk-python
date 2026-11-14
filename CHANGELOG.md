@@ -10,6 +10,15 @@ While the version is `0.x`, a minor release (`0.2.0`) may contain breaking chang
 
 ### Added
 
+- Exports (`whitemarket.exports`, `ExportClient` / `AsyncExportClient`, SDK_SPEC 3.10): beyond the spec, the row decoders
+  `iter_price_rows`, `iter_product_rows`, `aiter_price_rows`, `aiter_product_rows` stay public (they decode the chunks of
+  a file the caller downloaded itself); the other decoder internals are private. `RetryPolicy.should_retry_export` is the
+  public retry rule of an export GET (429 and every 5xx).
+  Every SDK request (GraphQL query, mutation and auth, export GET, SSE GET) is sent with `follow_redirects=False` and
+  `auth=None`, so an injected `http_client` can no longer follow a redirect or apply its `auth`; an export request also
+  carries none of the injected client's default headers or cookies. A download writes through a private (0600) temporary
+  file and gives the result the mode of the file it replaces, or the mode a new file would get. A cancelled `download`
+  leaves no temporary file. A row stream dropped without `close()` closes its connection when it is collected.
 - Live updates: `client.live(LiveTransport.WS | SSE, LiveOptions)` returns `LiveSession` (sync, background thread,
   blocking `poll(timeout)`) or `AsyncLiveSession`; typed events (`ProductAdded`, `ProductEdited`, `ProductRemoved`, the
   eight `Deal*` events, `UnknownEvent`), `subscribe_products`, `subscribe_personal`, `on`, lifecycle callbacks,
@@ -21,3 +30,47 @@ While the version is `0.x`, a minor release (`0.2.0`) may contain breaking chang
   filter enums; `whitemarket.deals.Until` (`offered`, `exchanged_or_completed`, `completed`, `final`).
 - `client.market` (sync and async): `search`, `iterate`, `get`, `sticker_suggestions`, `check_trade_url`, and
   `whitemarket.market.ProductFilter` / `ProductSort`.
+- `client.buying` (sync and async): `buy_product`, `buy_cheapest`, `buy_by_asset_id` returning `BuyResult`. Every form takes
+  an optional `max_price`; `custom_id` (a UUIDv4 when absent, 1 to 100 characters) and `trade_url` are keyword-only.
+  `market_buy` is sent once and never retried; an ambiguous failure is reconciled by `custom_id` (SDK_SPEC 3.3), ending in
+  `PurchaseOutcomeUnknownError` (now with `last_lookup_error`, the `market_buy` failure as `__cause__`).
+- `client.deals` (sync and async): `get`, `statuses`, `list_as_buyer`, `list_as_seller`, `history`, `iterate_history`,
+  `request_cancel`, `report_offer_sent`, `cancel_sending_offer`, `hold_balance`, `hold_balances`, `wait_for` (seller deals,
+  optional `live=` session wake-up; raises the new `DealWaitTimeoutError`), and `whitemarket.deals.DealHistoryFilter` /
+  `DealHistorySort`; enums `OfferCancelReason`, `DealHistoryStatus`, `DealHistorySortField`.
+- `client.selling` (sync and async): `list`, `list_many`, `reprice`, `reprice_many`, `remove`, `remove_many`,
+  `set_lifetime_for_all`, `my_products`, `iterate_my_products`, and `whitemarket.selling` (`ListingOptions`, `Listing`,
+  `PriceChange`, `BatchItemResult`, `BatchOutcome`). The single mutations are sent once and never retried; the `*_many`
+  methods send one request per chunk (`selling_batch_size`, default 100, a new client option also accepted by `from_env`),
+  report `SUCCEEDED | FAILED | UNKNOWN | NOT_SENT` per item in the caller's order and raise the new `BatchIncompleteError`
+  (`results`, failure as `__cause__`) unless every item has a server-reported outcome (SDK_SPEC 3.5).
+- `client.inventory` (sync and async): `list`, `iterate`, `refresh_from_steam`, and `whitemarket.inventory.InventoryFilter`
+  (SDK_SPEC 3.6). Items of a game other than CS2 are skipped. `refresh_from_steam` is a mutation, sent once.
+- `client.wallet` (sync and async): `balance`, `balances`, `deposits`, `withdrawals`, `transactions`, `iterate_transactions`,
+  `transfers`, `iterate_transfers`, `credit` (one query document with the three credit root fields, retried as a query),
+  `take_credit` and `transfer`, and `whitemarket.wallet.WalletTransactionFilter` / `WalletTransactionSort` (SDK_SPEC 3.8).
+  `take_credit` and `transfer` are sent once and never retried: a rejection (HTTP 400, 401, 429, a GraphQL error of the root
+  field with `data` null) propagates as its own error, any other failure is `MutationOutcomeUnknownError`, whose message names
+  the method and where to check (`wallet.credit()` / `wallet.transfers()`) and carries no amount or id.
+  `MutationOutcomeUnknownError` gained `check_hint`. Models `Deposit` (`airwallex_secret` is a `Secret`), `Withdrawal`,
+  `WalletTransaction`, `WalletTransfer`, `Debt`, `Credit`, `PersonSummary` and the enums `WalletMethod`, `DepositStatus`,
+  `WithdrawalStatus`, `TransferStatus`, `TransactionStatus`, `TransactionFeeType`, `TransactionSortField`, `PaymentProvider`,
+  `CryptoCurrency`, `CryptoNetwork` (all with an unknown fallback).
+- `client.profile` (sync and async): `id`, `get`, `set_trade_url`, `steam_proxy`, `set_steam_proxy`, `delete_steam_proxy`,
+  `set_steam_token`, `check_steam_token`, `delete_steam_token`, `set_email`, `confirm_email`, `resend_email_confirmation`,
+  `link_referrer`, `change_referrer_code` (SDK_SPEC 3.9). The proxy and the token payload are `Secret` parameters;
+  `steam_proxy()` and `Profile.steam_trade_url` are `Secret | None`. Every mutation is sent once. Model `Profile`,
+  `TradingCompetitionStat`, enum `Locale`.
+- `client.store` (sync and async): `get`, `edit(StoreSettings)` and `whitemarket.store.StoreSettings` (`custom_avatar` is
+  sent as `encodedCustomAvatar`). Models `Store`, `Achievement`, `AchievementParam` and the enums `StoreAvatar`,
+  `StoreBanner`, `AchievementCondition`, `AchievementName`, `AchievementStatus`, `AchievementKind`. A union member of an
+  achievement parameter the SDK does not know, and a null entry, are skipped.
+- `GraphQLError.data_present`: whether the response had a `data` key at all (`data: null` counts); a request error omits it.
+- `GraphQLErrorEntry.malformed`: true for an `errors[]` entry that is not shaped like the GraphQL spec; `GraphQLError.partial_data`
+  stays `{}` for an empty `data` object (it was `None`). Both keep buy reconciliation from reading an ambiguous error as a
+  rejection.
+
+### Known limitations
+
+- **No high-level `orders` module yet** (SDK_SPEC 3.7, plan T4.2; as in the PHP SDK 0.1.0). The generated `order_*` operations
+  are available through `client.generated`. Planned for the next minor release (`docs/DEVIATIONS.md`).

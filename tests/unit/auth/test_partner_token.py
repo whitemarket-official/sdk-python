@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 import pytest
 
-from support.flavors import FLAVORS, Flavor, jwt
+from support.flavors import Flavor, jwt
 from support.http import Script, reply
 from support.rigs import (
     PARTNER,
@@ -21,11 +21,6 @@ from whitemarket import RetryPolicy, Secret, StoredToken
 from whitemarket.errors import AuthenticationError, DecodeError, ServiceUnavailableError
 
 AUTH_ENDPOINT_QUERY = "auth_token"
-
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "flavor" in metafunc.fixturenames:
-        metafunc.parametrize("flavor", FLAVORS, ids=lambda f: f.name)
 
 
 @pytest.fixture

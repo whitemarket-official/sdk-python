@@ -3,13 +3,14 @@
 from collections.abc import Callable, Sequence
 from typing import Protocol, TypeVar
 
+from whitemarket._runtime.decimals import parse_decimal
+from whitemarket._runtime.decode import DecodePath
 from whitemarket._runtime.enums import UnknownTolerantEnum
-from whitemarket.models.decimals import parse_decimal
 from whitemarket.models.enums import Currency
 from whitemarket.models.money import Money
 from whitemarket.models.page import Page
 
-Path = tuple[str | int, ...]
+Path = DecodePath
 
 _E = TypeVar("_E", bound=UnknownTolerantEnum)
 _N = TypeVar("_N")

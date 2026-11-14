@@ -8,30 +8,41 @@ the export is public, and no header other than the ones built in `_headers` is e
 import logging
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 
 import httpx
 
 from whitemarket._runtime.body import (
     BodyAccumulator,
+    BodyBytes,
     BodyError,
     announced_length,
     body_is_gzip,
 )
 from whitemarket._runtime.credential_format import is_valid_header_value
 from whitemarket._runtime.endpoints import require_origin
+from whitemarket._runtime.export_redirect import (
+    MAX_REDIRECTS,
+    REDIRECT_STATUSES,
+    Origin,
+    redirect_target,
+)
 from whitemarket._runtime.http_errors import http_error_for
 from whitemarket._runtime.log_redaction import redact_url
+from whitemarket._runtime.retry_after import retry_after_for
+from whitemarket._runtime.safe_log import LOGGER_NAME, SafeLog
 from whitemarket._runtime.transport_config import build_user_agent
 from whitemarket._sync.export_cache import ExportCache
-from whitemarket._sync.transport import LOGGER_NAME, SafeLog, TransportSeams
+from whitemarket._sync.http_reply import (
+    HttpReply,
+    NoReply,
+    failure_name,
+    read_error_excerpt,
+)
+from whitemarket._sync.seams import TransportSeams
 from whitemarket.errors.base import TransportError
 from whitemarket.exports.conditional import ExportValidators, NotModified
 from whitemarket.exports.options import ExportOptions
-from whitemarket.exports.redirect import MAX_REDIRECTS, REDIRECT_STATUSES, Origin, redirect_target
-from whitemarket.retry import retry_after_for
 
-_ERROR_BODY_BYTES = 1024 * 1024  # an error body is read up to what the redactor still handles
 _OK = 200
 _NOT_MODIFIED = 304
 
@@ -40,20 +51,6 @@ def http_timeout(options: ExportOptions) -> httpx.Timeout:
     """Connect timeout and idle timeout (the longest silence per read); no total timeout."""
     idle = options.idle_timeout
     return httpx.Timeout(connect=options.connect_timeout, read=idle, write=idle, pool=idle)
-
-
-@dataclass(frozen=True, slots=True)
-class _ErrorReply:
-    status: int
-    retry_after_header: str | None
-    body: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _NoReply:
-    """A network failure before any response: the one kind of failure that is retried."""
-
-    what: str
 
 
 class ExportBody:
@@ -77,55 +74,47 @@ class ExportBody:
         self.validators = validators
         self._gzip = gzip
         self._expected = expected_bytes
+        self._closed = False
 
-    def read(self, limit: int) -> bytes:
+    @property
+    def closed(self) -> bool:
+        """True once the connection was closed (by an end, a failure, a stop or `aclose`)."""
+        return self._closed
+
+    def read(self, limit: int) -> BodyBytes:
         """The decoded body, at most `limit` decoded bytes; `TransportError` when it is longer,
         corrupt, cut short or unreadable."""
-        accumulator = self._accumulator(limit=limit)
-        result = b""
-        failure = ""
+        body = bytearray()
         try:
-            for raw in self._response.iter_raw():
-                accumulator.feed(raw)
-            result = accumulator.finish()
-        except BodyError as error:
-            failure = str(error)
-        except Exception as error:
-            failure = _what(error)
+            for piece in self.chunks(limit):
+                body += piece
         finally:
-            _close(self._response)
-        if failure:
-            raise TransportError(f"WhiteMarket export body: {failure}")
-        return result
+            self.close()
+        return body
 
-    def chunks(self) -> Iterator[bytes]:
-        """The decoded body as it arrives, with no size limit; fails like `read` at the point it
-        breaks. Stopping the iteration closes the connection."""
-        accumulator = self._accumulator(limit=None)
+    def chunks(self, limit: int | None = None) -> Iterator[bytes]:
+        """The decoded body as it arrives (`limit`: at most that many decoded bytes, else no
+        limit); `TransportError` when it is longer, corrupt, cut short or unreadable, at the point
+        it breaks. Stopping the iteration closes the connection."""
+        accumulator = BodyAccumulator(
+            limit=limit, gzip=self._gzip, strict=True, expected_raw_bytes=self._expected
+        )
         failure = ""
         try:
             for raw in self._response.iter_raw():
-                steps = accumulator.decode(raw)
-                # A `while` loop: `yield from` does not exist in async code.
-                while (piece := next(steps, None)) is not None:
+                for piece in accumulator.decode(raw):  # not `yield from`: none in async code
                     yield piece
             accumulator.finish()
-        except BodyError as error:
-            failure = str(error)
         except Exception as error:
-            failure = _what(error)
+            failure = _failure_text(error)
         finally:
-            _close(self._response)
+            self.close()
         if failure:
             raise TransportError(f"WhiteMarket export body: {failure}")
 
     def close(self) -> None:
+        self._closed = True
         _close(self._response)
-
-    def _accumulator(self, *, limit: int | None) -> BodyAccumulator:
-        return BodyAccumulator(
-            limit=limit, gzip=self._gzip, strict=True, expected_raw_bytes=self._expected
-        )
 
 
 def _close(response: httpx.Response) -> None:
@@ -135,15 +124,23 @@ def _close(response: httpx.Response) -> None:
         return
 
 
-def _what(error: Exception) -> str:
-    return f"request failed ({type(error).__name__})"
+def _no_check() -> None:
+    """The export has no total deadline to poll between chunks."""
+
+
+def _failure_text(error: Exception) -> str:
+    """What a body failure says: the message of a `BodyError` (it never quotes content), else the
+    class name only."""
+    return str(error) if isinstance(error, BodyError) else failure_name(error)
 
 
 class ExportTransport:
     """GETs export URLs over one httpx client. The only place of the export side that talks HTTP.
 
-    The client must not follow redirects: they are followed here, under the rules of SDK_SPEC
-    3.10 (at most 3, same host and port, https), so an injected client works too.
+    Every request is sent with `follow_redirects=False` and `auth=None` and carries no default
+    header of the client, so an injected client cannot follow a redirect or send a credential
+    here: redirects are followed by this class, under the rules of SDK_SPEC 3.10 (at most 3, same
+    host and port, https).
     """
 
     def __init__(
@@ -188,12 +185,16 @@ class ExportTransport:
         """Keep the validators of a 200 for the next conditional call of its URL.
 
         Call it once the caller has parsed the data: the validators of a body that failed to parse
-        must not make the next call answer `NotModified`.
+        must not make the next call answer `NotModified`. A 200 without validators is stored too
+        (as empty ones) when older ones are remembered, so the validators of an earlier answer are
+        not sent for a newer file.
         """
         validators = body.validators
-        if self._cache is None or validators is None or validators.is_empty:
+        if self._cache is None or validators is None:
             return
         try:
+            if validators.is_empty and self._cache.get(body.url) is None:
+                return  # nothing remembered, nothing to forget
             self._cache.set(body.url, validators)
         except Exception as error:
             self._log.warning("WhiteMarket export cache write failed (%s)", type(error).__name__)
@@ -205,22 +206,22 @@ class ExportTransport:
             attempt += 1
             started = time.monotonic()
             outcome = self._attempt(url, validators)
-            status = outcome.status if isinstance(outcome, _ErrorReply) else _OK
+            status = outcome.status if isinstance(outcome, HttpReply) else _OK
             self._log.debug(
                 "WhiteMarket export GET %s attempt=%d status=%s duration_ms=%d",
                 redact_url(url),
                 attempt,
-                status if not isinstance(outcome, _NoReply) else None,
+                status if not isinstance(outcome, NoReply) else None,
                 int((time.monotonic() - started) * 1000),
             )
-            if isinstance(outcome, _ErrorReply):
+            if isinstance(outcome, HttpReply):
                 retry_after = retry_after_for(
                     outcome.status, outcome.retry_after_header, self._clock()
                 )
-                if not policy.should_retry_read(attempt, outcome.status, retry_after):
-                    raise http_error_for(outcome.status, outcome.body, retry_after)
-            elif isinstance(outcome, _NoReply):
-                if not policy.should_retry_read(attempt, None):
+                if not policy.should_retry_export(attempt, outcome.status, retry_after):
+                    raise http_error_for(outcome.status, bytes(outcome.body), retry_after)
+            elif isinstance(outcome, NoReply):
+                if not policy.should_retry_export(attempt, None):
                     raise TransportError(f"WhiteMarket export {outcome.what}")
             else:
                 return outcome
@@ -228,13 +229,13 @@ class ExportTransport:
 
     def _attempt(
         self, url: str, validators: ExportValidators | None
-    ) -> ExportBody | NotModified | _ErrorReply | _NoReply:
+    ) -> ExportBody | NotModified | HttpReply | NoReply:
         headers = self._headers(validators)
         current = url
         hop = 0
         while True:
             sent = self._send(current, headers)
-            if isinstance(sent, _NoReply):
+            if isinstance(sent, NoReply):
                 return sent
             location = sent.headers.get("location", "").strip()
             if sent.status_code not in REDIRECT_STATUSES or not location:
@@ -245,25 +246,33 @@ class ExportTransport:
             current = redirect_target(location, self._origin)
             hop += 1
 
-    def _send(self, url: str, headers: dict[str, str]) -> httpx.Response | _NoReply:
+    def _send(self, url: str, headers: dict[str, str]) -> httpx.Response | NoReply:
         # The failure is reported by name only and raised AFTER the except blocks, so an httpx
         # error (which holds the request) never becomes a __context__.
         failure = ""
         retryable = False
         try:
-            request = self._http.build_request("GET", url, headers=headers)
-            return self._http.send(request, stream=True)
+            # Built without `build_request`: an injected client's default headers, cookies and base
+            # URL never reach the export host. `send` is told not to follow redirects (they are
+            # followed here, under the rules of SDK_SPEC 3.10) and to apply no `auth`.
+            request = httpx.Request(
+                "GET",
+                url,
+                headers=headers,
+                extensions={"timeout": self._http.timeout.as_dict()},
+            )
+            return self._http.send(request, stream=True, follow_redirects=False, auth=None)
         except httpx.TransportError as error:
-            failure, retryable = _what(error), True
+            failure, retryable = failure_name(error), True
         except Exception as error:
-            failure = _what(error)
+            failure = failure_name(error)
         if retryable:
-            return _NoReply(failure)
+            return NoReply(failure)
         raise TransportError(f"WhiteMarket export {failure}")
 
     def _classify(
         self, response: httpx.Response, url: str, validators: ExportValidators | None
-    ) -> ExportBody | NotModified | _ErrorReply:
+    ) -> ExportBody | NotModified | HttpReply:
         status = response.status_code
         # Only a plain 200 is the file: 206 is a range, 202 and 204 carry no complete file.
         if status == _OK:
@@ -291,25 +300,16 @@ class ExportTransport:
         )
         return ExportBody(response, url, validators, gzip=gzip, expected_bytes=expected)
 
-    def _error_reply(self, response: httpx.Response) -> _ErrorReply:
+    def _error_reply(self, response: httpx.Response) -> HttpReply:
         """The status and an excerpt of the body; a body that cannot be read is an empty excerpt."""
         body = b""
         try:
-            accumulator = BodyAccumulator(
-                limit=_ERROR_BODY_BYTES,
-                gzip=body_is_gzip(response.headers.get("content-encoding")),
-                truncate=True,
-            )
-            for raw in response.iter_raw():
-                accumulator.feed(raw)
-                if accumulator.done:
-                    break
-            body = accumulator.finish()
+            body = read_error_excerpt(response, _no_check)
         except Exception:
             body = b""
         finally:
             _close(response)
-        return _ErrorReply(response.status_code, response.headers.get("retry-after"), body)
+        return HttpReply(response.status_code, response.headers.get("retry-after"), body)
 
     def _headers(self, validators: ExportValidators | None) -> dict[str, str]:
         headers = {

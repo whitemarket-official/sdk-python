@@ -5,41 +5,32 @@ Hand-written async; the sync twin is generated (tools/unasync.py). One request p
 redirect, never a retry of a mutation. httpx facts behind these choices: docs/decisions/0002.
 """
 
-import contextlib
 import logging
-import secrets
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Protocol
 
 import httpx
 
-from whitemarket._concurrency import Deadline, sleep
-from whitemarket._runtime.body import BodyAccumulator, BodyError, body_is_gzip
+from whitemarket._concurrency import Deadline
+from whitemarket._runtime.body import BodyAccumulator, BodyBytes, BodyError, body_is_gzip
 from whitemarket._runtime.http_errors import http_error_for
 from whitemarket._runtime.log_redaction import redact_headers, redact_url
 from whitemarket._runtime.operation import OperationType
+from whitemarket._runtime.retry_after import retry_after_for
+from whitemarket._runtime.safe_log import LOGGER_NAME, SafeLog
 from whitemarket._runtime.secret import Secret
 from whitemarket._runtime.transport_config import TransportConfig
+from whitemarket._sync.http_reply import (
+    HttpReply,
+    NoReply,
+    failure_name,
+    read_error_excerpt,
+)
+from whitemarket._sync.seams import TransportSeams
 from whitemarket.errors.base import TransportError
-from whitemarket.retry import retry_after_for
 
-LOGGER_NAME = "whitemarket"
-_ERROR_BODY_BYTES = 1024 * 1024  # an error body is read up to what the redactor still handles
 _SUCCESS_LOWER, _SUCCESS_UPPER = 200, 299
-
-
-class Sleeper(Protocol):
-    def __call__(self, seconds: float) -> None: ...
-
-
-_JITTER = secrets.SystemRandom().random
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +39,8 @@ class HttpClients:
 
     `query` serves queries and keeps connections alive. `mutation` serves mutations on a
     connection that is never reused (ADR 0002). An injected client (`owned=False`) serves both and
-    is used as is: the SDK neither configures nor closes it.
+    is neither reconfigured nor closed, but every request is sent with `follow_redirects=False` and
+    `auth=None`, whatever the client was set up with (the credential must not follow a redirect).
     """
 
     query: httpx.Client
@@ -83,51 +75,6 @@ def _httpx_timeout(config: TransportConfig) -> httpx.Timeout:
     return httpx.Timeout(seconds, connect=config.timeouts.connect)
 
 
-@dataclass(frozen=True, slots=True)
-class _Reply:
-    status: int
-    retry_after_header: str | None
-    body: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _NoReply:
-    """A failure before any response arrived: the one kind of failure a query may retry."""
-
-    what: str
-
-
-@dataclass(frozen=True, slots=True)
-class TransportSeams:
-    """What the transport takes from the outside world: the clock, the wait and the jitter source.
-
-    Tests inject fixed ones; there is no public use for them.
-    """
-
-    clock: Callable[[], datetime] = _utc_now
-    sleeper: Sleeper = sleep
-    random: Callable[[], float] = _JITTER
-
-
-class SafeLog:
-    """A logger that never lets its own failure change the outcome of a request."""
-
-    def __init__(self, logger: logging.Logger) -> None:
-        self._logger = logger
-
-    def debug(self, message: str, *args: object) -> None:
-        with contextlib.suppress(Exception):  # a broken user logger must not fail a request
-            self._logger.debug(message, *args)
-
-    def info(self, message: str, *args: object) -> None:
-        with contextlib.suppress(Exception):
-            self._logger.info(message, *args)
-
-    def warning(self, message: str, *args: object) -> None:
-        with contextlib.suppress(Exception):
-            self._logger.warning(message, *args)
-
-
 class GraphQLTransport:
     """Posts GraphQL request bodies; the only place that talks HTTP."""
 
@@ -148,8 +95,9 @@ class GraphQLTransport:
         self._random = seams.random
         if not clients.owned:
             self._log.info(
-                "WhiteMarket SDK: the injected HTTP client is used as is; the SDK timeouts "
-                "and redirect policy are not applied to it (never let it follow redirects)."
+                "WhiteMarket SDK: the injected HTTP client keeps its own settings; the SDK "
+                "timeouts are not applied to it. Every request is still sent without redirects and "
+                "without the client's auth."
             )
 
     def post(
@@ -158,7 +106,7 @@ class GraphQLTransport:
         operation_type: OperationType,
         body: bytes,
         headers: Mapping[str, Secret],
-    ) -> bytes:
+    ) -> BodyBytes:
         """The body of the 2xx answer.
 
         Raises an `HttpError` subclass for any other status once the retry policy gives up, and
@@ -170,7 +118,7 @@ class GraphQLTransport:
             attempt += 1
             started = time.monotonic()
             outcome = self._attempt(operation_type, body, headers)
-            status = outcome.status if isinstance(outcome, _Reply) else None
+            status = outcome.status if isinstance(outcome, HttpReply) else None
             self._log.debug(
                 "WhiteMarket API request: operation=%s type=%s attempt=%d status=%s duration_ms=%d",
                 operation_name,
@@ -179,19 +127,19 @@ class GraphQLTransport:
                 status,
                 int((time.monotonic() - started) * 1000),
             )
-            if isinstance(outcome, _Reply):
+            if isinstance(outcome, HttpReply):
                 if _SUCCESS_LOWER <= outcome.status <= _SUCCESS_UPPER:
                     return outcome.body
                 retry_after = self._retry_after(outcome)
                 if not policy.should_retry(operation_type, attempt, outcome.status, retry_after):
-                    raise http_error_for(outcome.status, outcome.body, retry_after)
+                    raise http_error_for(outcome.status, bytes(outcome.body), retry_after)
             elif not policy.should_retry(operation_type, attempt, None):
                 raise TransportError(f"WhiteMarket API {outcome.what} on {operation_name}")
             delay = policy.delay(attempt, self._random())
             self._log.debug("WhiteMarket API retry: operation=%s delay=%.3f", operation_name, delay)
             self._sleeper(delay)
 
-    def _retry_after(self, reply: _Reply) -> int | None:
+    def _retry_after(self, reply: HttpReply) -> int | None:
         return retry_after_for(reply.status, reply.retry_after_header, self._clock())
 
     def _request_headers(
@@ -214,7 +162,7 @@ class GraphQLTransport:
 
     def _attempt(
         self, operation_type: OperationType, body: bytes, secrets: Mapping[str, Secret]
-    ) -> _Reply | _NoReply:
+    ) -> HttpReply | NoReply:
         client = self._clients.mutation if operation_type == "mutation" else self._clients.query
         headers = self._request_headers(operation_type, secrets)
         timeouts = self._config.timeouts
@@ -227,12 +175,12 @@ class GraphQLTransport:
         )
         # Whatever fails below is reported by name only and raised AFTER the except blocks: an httpx
         # error holds the request (with its credential header), so it must not become a __context__.
-        reply: _Reply | None = None
+        reply: HttpReply | None = None
         failure = ""
         sent = False
         try:
             with Deadline(timeouts.request if self._clients.owned else None) as deadline:
-                response = client.send(request, stream=True)
+                response = client.send(request, stream=True, follow_redirects=False, auth=None)
                 sent = True
                 try:
                     reply = self._read(response, deadline.check)
@@ -243,30 +191,25 @@ class GraphQLTransport:
         except TimeoutError:
             failure = "timed out"
         except httpx.HTTPError as error:
-            failure = f"request failed ({type(error).__name__})"
+            failure = failure_name(error)
         if reply is not None:
             return reply
         if not sent:
-            return _NoReply(failure)
+            return NoReply(failure)
         raise TransportError(f"WhiteMarket API could not read the response: {failure}")
 
-    def _read(self, response: httpx.Response, check: Callable[[], None]) -> _Reply:
+    def _read(self, response: httpx.Response, check: Callable[[], None]) -> HttpReply:
         status = response.status_code
-        ok = _SUCCESS_LOWER <= status <= _SUCCESS_UPPER
-        try:
-            gzip = body_is_gzip(response.headers.get("content-encoding"))
-        except BodyError:
-            if ok:
-                raise
-            return _Reply(status, response.headers.get("retry-after"), b"")
+        retry_after = response.headers.get("retry-after")
+        if not _SUCCESS_LOWER <= status <= _SUCCESS_UPPER:
+            return HttpReply(status, retry_after, read_error_excerpt(response, check))
         accumulator = BodyAccumulator(
-            limit=self._config.max_response_bytes if ok else _ERROR_BODY_BYTES,
-            gzip=gzip,
-            truncate=not ok,
+            limit=self._config.max_response_bytes,
+            gzip=body_is_gzip(response.headers.get("content-encoding")),
         )
         for chunk in response.iter_raw():
             accumulator.feed(chunk)
             if accumulator.done:
                 break
             check()
-        return _Reply(status, response.headers.get("retry-after"), accumulator.finish())
+        return HttpReply(status, retry_after, accumulator.finish())

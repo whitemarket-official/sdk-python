@@ -1,0 +1,76 @@
+"""`client.inventory`: the partner's own inventory (SDK_SPEC 3.6).
+
+Listing is a query, which the transport retries on transient failures (SDK_SPEC 1.4);
+`refresh_from_steam()` is a mutation and is never retried (CLAUDE.md rule 2).
+"""
+
+from collections.abc import AsyncIterator
+
+from whitemarket._async.pagination import forward_pagination, iterate_pages
+from whitemarket._generated.client import AsyncGeneratedClient
+from whitemarket._generated.input_types import PersonInventorySearchInput
+from whitemarket._mappers.common import map_page
+from whitemarket._mappers.products import map_inventory_item
+from whitemarket._runtime.unset import UNSET
+from whitemarket.inventory.filter import InventoryFilter
+from whitemarket.models.page import Page, PageRequest
+from whitemarket.models.products import InventoryItem
+
+_LIST = ("inventory_my",)
+
+
+class AsyncInventoryApi:
+    """`client.inventory`."""
+
+    def __init__(self, generated: AsyncGeneratedClient) -> None:
+        self._generated = generated
+
+    async def list(
+        self,
+        filter: InventoryFilter | PersonInventorySearchInput | None = None,
+        page: PageRequest | None = None,
+    ) -> Page[InventoryItem]:
+        """One page of the inventory (`inventory_my`).
+
+        Pass `PageRequest(after=previous.end_cursor)` for the next page while
+        `previous.has_next_page` is true, or use `iterate()`. A raw `PersonInventorySearchInput`
+        is sent as is. The server's defaults apply to what `page` leaves out. Items of a game
+        other than CS2 are skipped, so `Page.total_count` (the server's count) includes them and
+        can exceed the items returned.
+
+        Raises `DecodeError` for an unreadable answer and the other `WhiteMarketError` subclasses
+        for transport, HTTP and GraphQL failures.
+        """
+        answer = await self._generated.inventory_my(
+            forward_pagination=forward_pagination(page),
+            search=filter.to_input() if isinstance(filter, InventoryFilter) else filter or UNSET,
+        )
+        return map_page(
+            answer.inventory_my, lambda node, path: map_inventory_item(node, None, path), _LIST
+        )
+
+    def iterate(
+        self,
+        filter: InventoryFilter | PersonInventorySearchInput | None = None,
+        page_size: int | None = None,
+    ) -> AsyncIterator[InventoryItem]:
+        """Every inventory item that matches, page after page; a page is requested only when the
+        previous one is consumed. `page_size` is the items per request (the server's default when
+        None). Raises what `list()` raises, at the point of the iteration that reads the failing
+        page, and `DecodeError` when the server reports a next page without a new cursor.
+        """
+
+        async def fetch(after: str | None) -> Page[InventoryItem]:
+            return await self.list(filter, PageRequest(first=page_size, after=after))
+
+        return iterate_pages(fetch, _LIST)
+
+    async def refresh_from_steam(self) -> None:
+        """Ask the server to reload the inventory from Steam (`inventory_update`).
+
+        A mutation: sent once and never retried, so after an ambiguous failure (5xx, network
+        error, unreadable answer) the exception propagates and the outcome is unknown. Repeating
+        a refresh is harmless, so the caller may call this method again; the SDK never does. The
+        API returns the full profile; it is not returned here yet (`profile.get()` reads it).
+        """
+        await self._generated.inventory_update()
