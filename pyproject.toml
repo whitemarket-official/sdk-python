@@ -1,5 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.33"]
+# Exact pin: the build backend is part of the reproducible build (`make build`); raised by hand, like the other pins.
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -53,13 +54,15 @@ test = [
   "websockets==17.4",
 ]
 # GraphQL codegen tool, isolated in its own venv (`make install-codegen`): ariadne-codegen 0.19.0 requires
-# ruff>=0.15,<0.16, which conflicts with the ruff pin of `dev`.
+# ruff>=0.15,<0.16, which conflicts with the ruff pin of `dev`; [tool.uv] conflicts below lets uv.lock hold both.
 # tools/codegen/ariadne_plugin.py imports graphql-core directly, so it is declared here and not left to ariadne's own
 # requirement (CLAUDE.md rule 10); the same pin as the test extra.
 codegen = ["ariadne-codegen==0.19.0", "graphql-core==3.2.14"]
 dev = [
   "whitemarket-sdk[test]",
   "build==1.6.1",
+  # The build backend of `make build` (--no-isolation); equal to [build-system] requires (tools/ci/check_build_pin.py).
+  "hatchling==1.33.0",
   "mutmut==3.8.1",
   "mypy==2.4.1",
   "pip-audit==2.10.1",
@@ -73,6 +76,13 @@ Homepage = "https://github.com/whitemarket-official/sdk-python"
 Source = "https://github.com/whitemarket-official/sdk-python"
 Issues = "https://github.com/whitemarket-official/sdk-python/issues"
 Changelog = "https://github.com/whitemarket-official/sdk-python/blob/main/CHANGELOG.md"
+
+# --- uv ----------------------------------------------------------------------
+
+[tool.uv]
+# The `codegen` extra (ruff<0.16 through ariadne-codegen) and the `dev` extra (ruff 0.17) cannot share an environment:
+# uv resolves them as separate forks of uv.lock, and an environment is synced with one of them (`make install`).
+conflicts = [[{ extra = "codegen" }, { extra = "dev" }]]
 
 # --- build -------------------------------------------------------------------
 

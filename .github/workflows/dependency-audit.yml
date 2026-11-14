@@ -1,9 +1,10 @@
 name: Dependency audit
 
-# SPEC_SYNC 2026-11-13 item 3. Daily pip-audit of the pinned environment (every dependency and extra declared in
-# pyproject.toml, resolved to exact versions). When an advisory has a fixed version and the package is an exact pin
-# in pyproject.toml, the pin is raised and a PR is opened or updated. Anything else (a transitive package, a
-# lower-bound range, no fixed version) fails the run, so the failure notification reaches a human.
+# SPEC_SYNC 2026-11-13 item 3. Daily pip-audit of the locked environments (requirements-dev.txt and
+# requirements-codegen.txt, the hash-pinned exports of uv.lock). When an advisory has a fixed version and the package
+# is an exact pin in pyproject.toml, the pin is raised, uv.lock and the exports are regenerated (`make lock`) and a PR
+# is opened or updated. Anything else (a transitive package, a lower-bound range, no fixed version) fails the run, so
+# the failure notification reaches a human.
 on:
   schedule:
     - cron: '41 4 * * *'
@@ -17,9 +18,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Holds a read-only token. Resolution uses `pip install --dry-run --only-binary=:all:` on a requirements list
-  # derived from pyproject.toml: no wheel is installed and no sdist is built, so no dependency code runs; the repo's
-  # own package is never built. The write token lives in open-pr, which applies the patch as data.
+  # Holds a read-only token. The audit reads the committed exports; re-locking runs with UV_NO_BUILD=1 (wheels only):
+  # no dependency code runs and the repo's own package is never built. The write token lives in open-pr, which applies
+  # the patch as data.
   audit:
     name: Audit the pinned environment, raise affected pins
     runs-on: ubuntu-24.04
@@ -34,15 +35,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: '0.13.8'
           python-version: '3.13'
 
       # The audit tool itself, the exact pin of the dev extra (wheel only), not the audited dependencies.
       - name: Install pip-audit
         run: |
-          version=$(python tools/ci/audit_fix.py requirements pyproject.toml | sed -n 's/^pip-audit==//p')
-          python -m pip install --quiet --only-binary=:all: "pip-audit==$version"
+          version=$(python3 tools/ci/audit_fix.py requirements pyproject.toml | sed -n 's/^pip-audit==//p')
+          uv tool install --no-build "pip-audit==$version"
+          uv tool dir --bin >> "$GITHUB_PATH"
 
       - name: Audit and raise pins
         id: fix
@@ -51,30 +54,21 @@ jobs:
           mkdir -p "$out"
           report="$out/report.md"
           : > "$report"
-          # ariadne-codegen needs a ruff range that conflicts with the dev pin: resolved as its own group.
-          python tools/ci/audit_fix.py requirements pyproject.toml > "$out/main.in"
-          python tools/ci/audit_fix.py requirements pyproject.toml codegen > "$out/codegen.in"
-          # Each group is resolved and audited on its own: both hold a different `ruff`, and pip-audit rejects a
-          # requirements file with one package twice.
+          # The dev and codegen environments hold different `ruff` versions, and pip-audit rejects a requirements
+          # file with one package twice: each export is audited on its own.
           remaining=false
-          for group in main codegen; do
-            python -m pip install --dry-run --ignore-installed --only-binary=:all: --quiet \
-              --report "$out/$group.json" -r "$out/$group.in"
-            python - "$out/$group.json" <<'PY' > "$out/$group-pins.txt"
-          import json, sys
-          pins = {f'{i["metadata"]["name"]}=={i["metadata"]["version"]}' for i in json.load(open(sys.argv[1]))["install"]}
-          print("\n".join(sorted(pins)))
-          PY
+          for group in dev codegen; do
+            cp "requirements-$group.txt" "$out/$group-pins.txt"
             # Exit 1 means "vulnerabilities found" (JSON still written); --strict fails when a package cannot be audited.
             status=0
             pip-audit --strict --no-deps --disable-pip --progress-spinner off -f json -o "$out/$group-audit.json" \
               -r "$out/$group-pins.txt" || status=$?
             if [ "$status" -gt 1 ] || [ ! -s "$out/$group-audit.json" ]; then
-              echo "::error::pip-audit did not produce a result for the $group group (exit $status)"
+              echo "::error::pip-audit did not produce a result for the $group environment (exit $status)"
               exit 2
             fi
             status=0
-            python tools/ci/audit_fix.py fix "$out/$group-audit.json" pyproject.toml "$report" || status=$?
+            python3 tools/ci/audit_fix.py fix "$out/$group-audit.json" pyproject.toml "$report" || status=$?
             case "$status" in
               0) ;;
               1) remaining=true ;;
@@ -86,7 +80,9 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            git diff --binary -- pyproject.toml > "$out/changes.patch"
+            # A raised pin needs a new lock and new exports (hashes); wheels only.
+            UV_NO_BUILD=1 make lock
+            git diff --binary -- pyproject.toml uv.lock 'requirements-*.txt' > "$out/changes.patch"
           fi
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
 
@@ -98,7 +94,7 @@ jobs:
           out="$RUNNER_TEMP/dependency-audit"
           {
             echo "Automated security update: \`pip-audit\` found advisories with a fixed version, so the affected"
-            echo "exact pins in \`pyproject.toml\` were raised."
+            echo "exact pins in \`pyproject.toml\` were raised and \`uv.lock\` with the \`requirements-*.txt\` exports regenerated (\`make lock\`)."
             echo
             if [ "$REMAINING" = "true" ]; then
               echo "> **Some advisories remain** (no exact pin to raise or no fixed version); see below."
@@ -108,7 +104,7 @@ jobs:
             echo "### Reviewer checklist"
             echo
             echo "- [ ] CI is green (if it did not start, close and reopen the PR or re-run it by hand)."
-            echo "- [ ] Only pins changed; any new runtime package still needs an ADR (CLAUDE.md rule 10)."
+            echo "- [ ] Only pins and the files generated from them changed; any new runtime package still needs an ADR (CLAUDE.md rule 10)."
           } > "$out/pr-body.md"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -147,13 +143,13 @@ jobs:
           name: dependency-audit
           path: ${{ runner.temp }}/dependency-audit
 
-      # The patch is data: git apply writes a file, nothing from it runs. Any path other than pyproject.toml fails.
+      # The patch is data: git apply writes a file, nothing from it runs. Any path other than pyproject.toml, uv.lock and requirements-*.txt fails.
       - name: Apply the patch
         run: |
           git apply --binary "$RUNNER_TEMP/dependency-audit/changes.patch"
-          unexpected=$(git status --porcelain --untracked-files=all | cut -c4- | grep -vxE 'pyproject\.toml' || true)
+          unexpected=$(git status --porcelain --untracked-files=all | cut -c4- | grep -vxE 'pyproject\.toml|uv\.lock|requirements-(dev|test|codegen)\.txt' || true)
           if [ -n "$unexpected" ]; then
-            echo "::error::the patch touches paths other than pyproject.toml"
+            echo "::error::the patch touches paths other than pyproject.toml, uv.lock and requirements-*.txt"
             echo "$unexpected"
             exit 1
           fi
@@ -173,3 +169,7 @@ jobs:
           labels: dependencies
           add-paths: |
             pyproject.toml
+            uv.lock
+            requirements-dev.txt
+            requirements-test.txt
+            requirements-codegen.txt

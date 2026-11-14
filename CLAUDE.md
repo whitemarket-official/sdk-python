@@ -1,7 +1,7 @@
 # WhiteMarket Python SDK: AI Agent Guide
 
 Python SDK for the WhiteMarket partner API (CS2 skins marketplace): GraphQL partner API, public export files, live updates (SSE, WebSocket).
-Package: distribution `whitemarket-sdk` (PyPI), import package `whitemarket`, `src/` layout, `py.typed`. Runtime support: every CPython version in bugfix or security status at release time (https://devguide.python.org/versions/). Host has Python 3.13.3; `uv` is not installed on the host (ask the user once to `brew install uv`; until then use `python3 -m venv` + pip).
+Package: distribution `whitemarket-sdk` (PyPI), import package `whitemarket`, `src/` layout, `py.typed`. Runtime support: every CPython version in bugfix or security status at release time (https://devguide.python.org/versions/). Host has Python 3.13.3; `uv` is installed on the host. Developers of this SDK choose `uv` or `pip` (no poetry): `uv.lock` is the single source of exact versions, `requirements-*.txt` are its hash-pinned exports for pip; change dependencies only through `make lock`.
 
 Read on demand, not every session:
 
@@ -104,7 +104,7 @@ All checks go through the Makefile, locally and in CI, so humans, agents and CI 
 
 | Goal | Command |
 |---|---|
-| env + deps | `make install` (`uv sync --all-extras` or venv + `pip install -e .[dev]`) |
+| env + deps | `make install` (`PM=uv`: `uv sync --frozen`; `PM=pip`: venv + `pip install --require-hashes -r requirements-dev.txt`; default uv when on PATH), `make lock` / `make lock-check` |
 | everything CI runs | `make check` |
 | format / check | `make fmt` / `make fmt-check` (ruff format) |
 | lint | `make lint` (ruff, rule set incl. `B S UP SIM RUF ASYNC PT`) |

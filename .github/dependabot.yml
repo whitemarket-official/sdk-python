@@ -1,14 +1,16 @@
 # Keys checked against https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
-# (2026-11-14). Dependency changes still go through review and the ADR rule (CLAUDE.md rule 10).
+# (2026-11-14); the `uv` ecosystem is listed in the supported-ecosystems table. Dependabot updates pyproject.toml and
+# uv.lock but not the requirements-*.txt exports: a Dependabot PR needs `make lock` before CI's lock-check is green.
+# Dependency changes still go through review and the ADR rule (CLAUDE.md rule 10).
 version: 2
 updates:
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
     groups:
-      pip-minor-patch:
+      uv-minor-patch:
         patterns: ['*']
         update-types: [minor, patch]
   - package-ecosystem: github-actions

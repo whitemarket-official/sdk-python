@@ -35,6 +35,8 @@ The base install depends on `httpx` and `pydantic`. Reading an export file witho
 naming the extra (JSON streaming needs `ijson`); without the `live` extra only SSE live updates work
 (`LiveTransport.SSE`), and the default WebSocket transport raises an `ImportError` naming the extra.
 
+Contributors: `make install` sets up the development setup with uv or pip, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Requirements
 
 Python 3.11 or newer: every CPython version in bugfix or security status (3.11 to 3.15 at the time of writing,

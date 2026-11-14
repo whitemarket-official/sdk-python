@@ -5,18 +5,30 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# uv is not required: a plain venv + pip (CLAUDE.md). CI and the matrix containers may override VENV.
+# Two package managers, one result (CONTRIBUTING "Setup"): PM=uv installs from uv.lock, PM=pip installs from the
+# hash-pinned requirements-*.txt exported from it. Default: uv when it is on the PATH, else pip. CI and the matrix
+# containers may override VENV.
 PYTHON ?= python3
+PM ?= $(if $(shell command -v uv 2>/dev/null),uv,pip)
+ifeq ($(filter $(PM),uv pip),)
+$(error PM must be uv or pip, got '$(PM)')
+endif
 VENV ?= .venv
 PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
-INSTALL_EXTRAS ?= dev,exports,live
 
-# ariadne-codegen lives in its own venv: its ruff requirement conflicts with the ruff pin of the dev extra.
+# ariadne-codegen lives in its own venv: its ruff requirement conflicts with the ruff pin of the dev extra
+# (uv.lock holds both, see [tool.uv] conflicts in pyproject.toml).
 CODEGEN_VENV ?= .venv-codegen
 
 # Every CPython in bugfix or security status (https://devguide.python.org/versions/, checked 2026-11-13).
 PY_VERSIONS := 3.11 3.12 3.13 3.14 3.15
+
+# The extras of each environment. The pip files are `uv export` of the same selection (target `lock`).
+DEV_EXTRAS := dev exports live
+TEST_EXTRAS := test exports live
+CODEGEN_EXTRAS := codegen
+UV_EXTRA_ARGS = $(foreach e,$(1),--extra $(e))
 
 QC := tools/qc-filter.sh
 
@@ -26,24 +38,57 @@ help: ## List targets
 
 ## --- dependencies -------------------------------------------------------------
 
+# One environment = one lock selection. uv: `uv sync --frozen` (exact, removes extras not in the selection).
+# pip: a fresh venv + `--require-hashes` + the editable project without its dependencies.
+# $(1) venv, $(2) extras for uv, $(3) requirements file for pip.
+define INSTALL_ENV
+@if [ "$(PM)" = uv ]; then \
+	UV_PROJECT_ENVIRONMENT=$(1) uv sync --frozen --quiet $(call UV_EXTRA_ARGS,$(2)); \
+else \
+	test -x $(1)/bin/python || $(PYTHON) -m venv $(1); \
+	$(1)/bin/python -m pip install --quiet --disable-pip-version-check --require-hashes -r $(3); \
+	$(1)/bin/python -m pip install --quiet --disable-pip-version-check --no-deps -e .; \
+fi
+endef
+
 .PHONY: install
-install: ## Create the venv and install the package editable with the dev, exports and live extras
-	@test -x $(PY) || $(PYTHON) -m venv $(VENV)
-	$(PY) -m pip install --quiet --upgrade pip
-	$(PY) -m pip install --quiet -e '.[$(INSTALL_EXTRAS)]'
+install: ## Create .venv from the lock (PM=uv|pip, default uv if installed) and the codegen venv
+	$(call INSTALL_ENV,$(VENV),$(DEV_EXTRAS),requirements-dev.txt)
 	@$(MAKE) --no-print-directory $(CODEGEN_STAMP)
 
 .PHONY: install-codegen
 install-codegen: ## Create the isolated codegen venv (ariadne-codegen, extra "codegen")
-	@test -x $(CODEGEN_VENV)/bin/python || $(PYTHON) -m venv $(CODEGEN_VENV)
-	$(CODEGEN_VENV)/bin/python -m pip install --quiet --upgrade pip
-	$(CODEGEN_VENV)/bin/python -m pip install --quiet -e '.[codegen]'
+	$(call INSTALL_ENV,$(CODEGEN_VENV),$(CODEGEN_EXTRAS),requirements-codegen.txt)
 	@touch $(CODEGEN_VENV)/.installed
+
+## --- lock ---------------------------------------------------------------------
+
+LOCK_EXPORT = uv export --quiet --frozen --format requirements.txt --no-emit-project --no-annotate --no-header
+# $(1) output directory
+EXPORT_ALL = $(LOCK_EXPORT) $(call UV_EXTRA_ARGS,$(DEV_EXTRAS)) -o $(1)/requirements-dev.txt; \
+	$(LOCK_EXPORT) $(call UV_EXTRA_ARGS,$(TEST_EXTRAS)) -o $(1)/requirements-test.txt; \
+	$(LOCK_EXPORT) $(call UV_EXTRA_ARGS,$(CODEGEN_EXTRAS)) -o $(1)/requirements-codegen.txt
+
+.PHONY: lock
+lock: ## Re-resolve uv.lock from pyproject.toml and regenerate requirements-*.txt (needs uv); upgrade: make lock UPGRADE=1
+	uv lock $(if $(UPGRADE),--upgrade)
+	$(call EXPORT_ALL,.)
+
+.PHONY: lock-check
+lock-check: ## uv.lock and requirements-*.txt match pyproject.toml; the hatchling pin matches the lock (needs uv)
+	@if ! command -v uv >/dev/null 2>&1; then \
+		echo "lock-check SKIPPED: uv is not installed (CI runs it; brew install uv)"; exit 0; fi; \
+	rm -rf var/lock-check && mkdir -p var/lock-check; \
+	$(QC) lock-check bash -c 'set -e; uv lock --check; \
+		$(call EXPORT_ALL,var/lock-check); \
+		for f in dev test codegen; do diff -u requirements-$$f.txt var/lock-check/requirements-$$f.txt || \
+			{ echo "requirements-$$f.txt is stale: run make lock"; exit 1; }; done; \
+		$(PYTHON) tools/ci/check_build_pin.py'
 
 ## --- checks -------------------------------------------------------------------
 
 .PHONY: check
-check: fmt-check lint types coverage codegen-check audit ## Everything CI runs
+check: lock-check fmt-check lint types coverage codegen-check audit ## Everything CI runs
 
 .PHONY: fmt
 fmt: ## Format code (ruff format)
@@ -81,17 +126,20 @@ mutation: ## Mutation tests (mutmut, config in pyproject.toml; results: .venv/bi
 	@NO_PROXY=127.0.0.1,localhost $(QC) mutation $(BIN)/mutmut run
 
 .PHONY: audit
-audit: ## Known vulnerabilities in the installed dependencies (the local editable package is skipped)
+audit: ## Known vulnerabilities in the locked dependencies (requirements-dev.txt and requirements-codegen.txt)
 	@mkdir -p var/qc
-# The exact pins of the venv, without the editable SDK itself; --strict fails if any of them cannot be audited
-# (`--skip-editable` would count the SDK as a skipped dependency and fail --strict).
-	@$(QC) audit bash -c 'set -e; $(PY) -m pip freeze --exclude-editable > var/qc/audit-requirements.txt; \
-		$(BIN)/pip-audit --strict --no-deps --disable-pip --progress-spinner off -r var/qc/audit-requirements.txt'
+# The exact pins the lock holds for each environment (the dev and codegen sets hold different ruff versions, so they
+# are audited separately). The editable SDK is not in these files; --strict fails if a package cannot be audited.
+	@$(QC) audit bash -c 'set -e; for f in dev codegen; do \
+		$(BIN)/pip-audit --strict --no-deps --disable-pip --progress-spinner off -r requirements-$$f.txt; done'
 
 .PHONY: build
-build: ## Build sdist + wheel into dist/ and check the metadata
+build: ## Build sdist + wheel into dist/ from the locked environment (hatchling pinned), reproducible; twine check
 	@rm -rf dist
-	@$(QC) build bash -c 'set -e; $(PY) -m build --outdir dist .; $(BIN)/twine check --strict dist/*'
+# --no-isolation: the backend is the locked hatchling (tools/ci/check_build_pin.py keeps it equal to [build-system]).
+# SOURCE_DATE_EPOCH (honoured by hatchling) = the commit time, so the same commit gives byte-identical artifacts.
+	@SOURCE_DATE_EPOCH=$$(git log -1 --pretty=%ct 2>/dev/null || echo 315532800) \
+		$(QC) build bash -c 'set -e; $(PY) -m build --no-isolation --outdir dist .; $(BIN)/twine check --strict dist/*'
 
 ## --- codegen ------------------------------------------------------------------
 
@@ -107,7 +155,7 @@ schema: ## Fetch the partner schema by introspection
 # The codegen venv is created on first use (stamp file, refreshed when pyproject.toml changes).
 CODEGEN_STAMP := $(CODEGEN_VENV)/.installed
 
-$(CODEGEN_STAMP): pyproject.toml
+$(CODEGEN_STAMP): pyproject.toml uv.lock requirements-codegen.txt
 	@$(MAKE) --no-print-directory install-codegen
 	@touch $@
 
@@ -134,8 +182,8 @@ codegen-check: $(CODEGEN_STAMP) ## Regenerate into var/codegen-check and fail on
 
 # Each version runs in the official image as the host user, with its own venv inside the container (the host .venv
 # is not touched) and without the pytest cache in the bind mount.
-MATRIX_RUN = set -e; $(PYTHON) -m venv /tmp/venv; /tmp/venv/bin/python -m pip install --quiet --upgrade pip; \
-	/tmp/venv/bin/python -m pip install --quiet -e ".[test,exports,live]"; \
+MATRIX_RUN = set -e; $(PYTHON) -m venv /tmp/venv; /tmp/venv/bin/python -m pip install --quiet --disable-pip-version-check --require-hashes -r requirements-test.txt; \
+	/tmp/venv/bin/python -m pip install --quiet --disable-pip-version-check --no-deps -e .; \
 	/tmp/venv/bin/python -m pytest -p no:cacheprovider tests/unit
 
 .PHONY: matrix

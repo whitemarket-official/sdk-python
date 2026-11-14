@@ -19,6 +19,9 @@ concurrency:
 env:
   # The version of the single-version jobs (static checks, coverage gate, OS matrix, build).
   TOOLS_PYTHON: '3.13'
+  # uv itself is pinned too (the lock format and `uv export` output depend on it); raised together with the pin in
+  # CONTRIBUTING "Setup".
+  UV_VERSION: '0.13.8'
 
 jobs:
   static:
@@ -29,19 +32,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ env.TOOLS_PYTHON }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
       # codegen-check regenerates the generated layer: the operation generator is Node.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: tools/codegen/package-lock.json
-      - run: make install
-      - run: make fmt-check lint types codegen-check audit hooks-test VERBOSE=1
+      # From uv.lock (`uv sync --frozen`): the exact versions the lock holds, no resolution in CI.
+      - run: make install PM=uv
+      - run: make lock-check fmt-check lint types codegen-check audit hooks-test VERBOSE=1
       - run: make actionlint VERBOSE=1
 
   tests:
@@ -57,19 +60,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python }}
-          allow-prereleases: true
-          cache: pip
-          cache-dependency-path: pyproject.toml
       # Only what the tests need (like `make matrix`): the dev tools are not required on every version and not all
       # of them support every interpreter. `make install` runs in the static job.
-      - name: Install the package with the test extras
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --quiet --upgrade pip
-          .venv/bin/python -m pip install --quiet -e '.[test,exports,live]'
+      - name: Install the locked test environment
+        run: UV_PROJECT_ENVIRONMENT=.venv uv sync --frozen --extra test --extra exports --extra live
       # The coverage gate (fail_under in pyproject.toml) runs once, on the tools version; the others run the tests.
       - run: make ${{ matrix.python == '3.13' && 'coverage' || 'test' }} VERBOSE=1
 
@@ -85,18 +83,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.TOOLS_PYTHON }}
+      # No make and no .venv/bin on Windows: the same two commands everywhere.
+      - name: Unit tests
+        shell: bash
+        run: uv run --frozen --extra test --extra exports --extra live python -m pytest tests/unit
+
+  # Proves the pip path of CONTRIBUTING "Setup": hash-pinned requirements-dev.txt and requirements-codegen.txt, no uv.
+  pip-compat:
+    name: Install with pip from the hashed requirements, unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.TOOLS_PYTHON }}
           cache: pip
-          cache-dependency-path: pyproject.toml
-      # No make and no .venv/bin on Windows: the same two commands everywhere.
-      - name: Install the package with the test extras
-        shell: bash
-        run: python -m pip install --quiet -e '.[test,exports,live]'
-      - name: Unit tests
-        shell: bash
-        run: python -m pytest tests/unit
+          cache-dependency-path: requirements-*.txt
+      - run: make install PM=pip
+      - run: make lint types test VERBOSE=1
 
   secrets:
     name: Secret scan (gitleaks)
@@ -117,12 +128,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ env.TOOLS_PYTHON }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: make install
+      - run: make install PM=uv
       - run: make build VERBOSE=1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -135,7 +145,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [static, tests, tests-os, secrets, build]
+    needs: [static, tests, tests-os, pip-compat, secrets, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

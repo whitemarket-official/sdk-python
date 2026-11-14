@@ -5,10 +5,28 @@
 Requirements: a supported CPython (see `requires-python` in `pyproject.toml`), Node.js 22+ (codegen tools), GNU Make,
 Docker (only for the runtime-version matrix).
 
+Pick a package manager: **uv** or **pip** (no poetry). Both install the same exact versions.
+
+- `uv.lock` is the single source of exact versions (all extras, hashes), resolved from `pyproject.toml`.
+- `requirements-dev.txt` (extras `dev,exports,live`), `requirements-test.txt` (`test,exports,live`; the Docker matrix)
+  and `requirements-codegen.txt` (`codegen`) are hash-pinned exports of `uv.lock` for pip. Never edit them by hand.
+- The `codegen` extra (ariadne-codegen needs `ruff<0.16`) and the `dev` extra (`ruff` 0.17) conflict, so they live in two
+  virtual environments: `.venv` and `.venv-codegen`. `[tool.uv] conflicts` in `pyproject.toml` lets one lock hold both.
+
 ```bash
-make install   # .venv + editable install with the dev, exports and live extras
-make check     # everything CI runs
+make install            # PM=uv if uv is on the PATH, else PM=pip: .venv and .venv-codegen
+make install PM=pip     # python3 -m venv + pip install --require-hashes -r requirements-dev.txt + pip install --no-deps -e .
+make install PM=uv      # uv sync --frozen
+make check              # everything CI runs
 ```
+
+Everything else (`make test`, `make types`, ...) runs from `.venv/bin/...` and behaves the same for both. Changing a
+dependency (an extra, a pin in `pyproject.toml`) needs uv: edit `pyproject.toml`, run `make lock` (re-resolves `uv.lock`
+and regenerates the three requirements files; `make lock UPGRADE=1` also takes newer versions), and commit all of them.
+`make lock-check` (part of `make check`; skipped with a notice when uv is missing, CI always runs it) fails when the lock
+or an export is stale or the `hatchling` pin of `[build-system]` differs from the locked one.
+`make build` builds with the locked `hatchling` (`--no-isolation`) and `SOURCE_DATE_EPOCH` set to the commit time, so
+the same commit gives byte-identical artifacts.
 
 Run `make help` for all targets. Noisy targets print only errors and a summary; the full log is in `var/qc/<target>.log`
 (`VERBOSE=1` shows everything). `make matrix` runs the unit tests on every supported Python version in Docker.
@@ -17,14 +35,15 @@ Run `make help` for all targets. Noisy targets print only errors and a summary; 
 
 | Goal | Command |
 |---|---|
-| everything CI runs (`fmt-check lint types coverage codegen-check audit`) | `make check` |
+| everything CI runs (`lock-check fmt-check lint types coverage codegen-check audit`) | `make check` |
 | format / check formatting | `make fmt` / `make fmt-check` |
 | lint (ruff) | `make lint` |
 | types (`mypy --strict` and pyright strict on `src/` and `examples/`) | `make types` |
 | unit tests, one subset | `make test` / `make test K=expr` |
 | coverage gate (85 %) | `make coverage` |
 | mutation tests | `make mutation` |
-| dependency audit | `make audit` |
+| dependency audit (the locked sets) | `make audit` |
+| re-lock after a dependency change / verify the lock | `make lock` / `make lock-check` |
 | build sdist and wheel, `twine check` | `make build` |
 | unit tests on every supported Python (Docker) | `make matrix` |
 | run an example against the real API | `make example NAME=search_market` |
@@ -45,7 +64,7 @@ make codegen         # operations + fragments, ariadne-codegen -> _generated, to
 make codegen-check   # regenerate into var/codegen-check and fail on any difference
 ```
 
-`make codegen` runs `ariadne-codegen` in its own venv (`.venv-codegen`, created on first use) and then
+`make codegen` runs `ariadne-codegen` in its own venv (`.venv-codegen`, created by `make install`) and then
 `tools/unasync.py`, which turns the async client and `src/whitemarket/_async/` into the sync twin `_sync/`. After editing
 anything in `_async/` run `make codegen` so `_sync/` follows. A hand-written selection that must differ from the generated
 one goes to `graphql/overrides/`.
