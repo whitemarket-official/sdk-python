@@ -119,11 +119,23 @@ coverage: ## Unit tests with the coverage gate (fail_under in pyproject.toml, ge
 	@$(QC) coverage $(BIN)/pytest tests/unit --cov --cov-report=term-missing \
 		--cov-report=xml:var/qc/coverage.xml
 
+# Empty: mutate everything. A git ref (origin/main): only the hand-written src/whitemarket files changed since the
+# merge base with it (pull requests); mutants of an earlier run are discarded so the gate sees this run only.
+MUTATE_CHANGED ?=
+
 .PHONY: mutation
-mutation: ## Mutation tests (mutmut, config in pyproject.toml; results: .venv/bin/mutmut browse)
+mutation: ## Mutation tests + score gate (mutmut, config in pyproject.toml; MUTATE_CHANGED=origin/main: diff only)
 # mutmut forks the pytest process; on macOS urllib's system proxy lookup (SystemConfiguration, reached through
 # httpx.Client()) segfaults in a forked child. A non-empty proxy environment makes urllib skip that lookup.
-	@NO_PROXY=127.0.0.1,localhost $(QC) mutation $(BIN)/mutmut run
+# The gate (tools/ci/mutation_gate.py) fails below 80 %: (killed + timeout) / (run - no_tests), as minMsi in the PHP SDK.
+	@set -e; names=""; \
+	if [ -n "$(MUTATE_CHANGED)" ]; then \
+		names=$$($(BIN)/python tools/ci/mutation_gate.py names --base "$(MUTATE_CHANGED)"); \
+		if [ -z "$$names" ]; then echo "mutation: no hand-written src/ file changed against $(MUTATE_CHANGED); skipped"; exit 0; fi; \
+		rm -rf ./mutants; \
+	fi; \
+	NO_PROXY=127.0.0.1,localhost $(QC) mutation $(BIN)/mutmut run $$names; \
+	$(BIN)/python tools/ci/mutation_gate.py gate
 
 .PHONY: audit
 audit: ## Known vulnerabilities in the locked dependencies (requirements-dev.txt and requirements-codegen.txt)

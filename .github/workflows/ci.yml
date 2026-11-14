@@ -142,11 +142,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Mirrors the PHP SDK job: a pull request mutates only the hand-written files it changed (tools/ci/mutation_gate.py
+  # lists them); push to main and manual runs mutate everything (about 35 min). The gate fails below 80 %.
+  mutation:
+    name: Mutation tests (mutmut)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The changed-files run diffs against the base branch, which needs the history.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.TOOLS_PYTHON }}
+      - run: make install PM=uv
+      - name: make mutation
+        env:
+          # Pull requests target main; a fixed base keeps branch names out of the command line.
+          MUTATE_CHANGED: ${{ github.event_name == 'pull_request' && 'origin/main' || '' }}
+        run: make mutation VERBOSE=1
+
   # Single required status check for the branch ruleset: green only when every job above is green.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [static, tests, tests-os, pip-compat, secrets, build]
+    needs: [static, tests, tests-os, pip-compat, secrets, mutation, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
