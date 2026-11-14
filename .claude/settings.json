@@ -86,6 +86,14 @@
       "Edit(./.claude/**)",
       "Edit(./.mcp.json)",
       "Edit(./CLAUDE.md)",
+      "Edit(./Makefile)",
+      "Edit(./tools/**)",
+      "Edit(./pyproject.toml)",
+      "Edit(./.github/**)",
+      "Write(./Makefile)",
+      "Write(./tools/**)",
+      "Write(./pyproject.toml)",
+      "Write(./.github/**)",
       "Edit(~/.claude/**)"
     ],
     "deny": [
