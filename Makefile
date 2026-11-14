@@ -76,7 +76,9 @@ coverage: ## Unit tests with the coverage gate (fail_under in pyproject.toml, ge
 
 .PHONY: mutation
 mutation: ## Mutation tests (mutmut, config in pyproject.toml; results: .venv/bin/mutmut browse)
-	@$(QC) mutation $(BIN)/mutmut run
+# mutmut forks the pytest process; on macOS urllib's system proxy lookup (SystemConfiguration, reached through
+# httpx.Client()) segfaults in a forked child. A non-empty proxy environment makes urllib skip that lookup.
+	@NO_PROXY=127.0.0.1,localhost $(QC) mutation $(BIN)/mutmut run
 
 .PHONY: audit
 audit: ## Known vulnerabilities in the installed dependencies (the local editable package is skipped)

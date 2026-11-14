@@ -176,4 +176,11 @@ skip_covered = true
 
 [tool.mutmut]
 source_paths = ["src/"]
+# The mutants/ copy must see what the tests import or read: tools/ (pythonpath), graphql/ and schema/ (fixtures).
+also_copy = ["tools/", "graphql/", "schema/", "examples/"]
+# Hand-written code only: the generated layer and the generated sync mirror are rebuilt by `make codegen`.
+do_not_mutate = ["src/whitemarket/_generated/*", "src/whitemarket/_sync/*"]
 pytest_add_cli_args_test_selection = ["tests/unit/"]
+# Introspects the public method names of the async and sync clients; mutmut's trampolines add mutant methods
+# to the mutated async side only, so the comparison is meaningless inside the mutants/ copy.
+pytest_add_cli_args = ["--deselect=tests/unit/generated/test_client.py::test_the_sync_client_has_the_async_clients_methods"]

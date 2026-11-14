@@ -1,5 +1,6 @@
 """Real loopback servers on 127.0.0.1 (threads, no network): redirects, connection reuse, drops."""
 
+import contextlib
 import socket
 import socketserver
 import threading
@@ -152,5 +153,8 @@ class RawServer:
 
     def __exit__(self, *exc: object) -> None:
         self._stop = True
+        # On Linux close() alone does not wake a thread blocked in accept(); shutdown() does.
+        with contextlib.suppress(OSError):
+            self._listener.shutdown(socket.SHUT_RDWR)
         self._listener.close()
         self._thread.join(timeout=5)

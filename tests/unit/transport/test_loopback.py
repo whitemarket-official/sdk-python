@@ -246,8 +246,9 @@ def test_a_server_that_never_answers_ends_with_a_transport_error(session: Any) -
 
         with pytest.raises(TransportError) as caught:
             s.mutation()
+        elapsed = time.monotonic() - started  # taken before the server teardown
 
-    assert time.monotonic() - started < 2.5
+    assert elapsed < 2.5
     assert caught.value.__context__ is None
     assert len(server.record.requests) == 1
 
@@ -260,8 +261,9 @@ def test_a_server_that_drips_the_body_cannot_hold_the_request_open(session: Any)
 
         with pytest.raises(TransportError, match="could not read the response"):
             s.mutation()
+        elapsed = time.monotonic() - started  # taken before the server teardown
 
-    assert time.monotonic() - started < 3
+    assert elapsed < 3
     assert len(server.record.requests) == 1, "a body failure after the answer is never retried"
 
 
