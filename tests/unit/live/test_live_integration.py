@@ -63,6 +63,7 @@ def ws_session(server: FakeCentrifugoServer, tokens: FakeTokens) -> AsyncLiveSes
         connection=WsConnection(server.url, "ua", proxy=None),
         options=LiveOptions(connect_timeout=3.0),
         sleeper=lambda seconds: asyncio.sleep(0),  # no real backoff waits
+        random_source=lambda: 0.0,  # full jitter of 0: the backoff delay is 0
     )
 
 
@@ -148,8 +149,44 @@ async def test_ws_unknown_close_codes_end_the_session_on_the_sixth_in_a_row() ->
         session.subscribe_products()
         with pytest.raises(LiveConnectionError) as caught:
             await session.poll(30)
-    assert caught.value.code == 1  # the library reports every close below 3000 as code 1
+    assert caught.value.code == 1001  # the real WebSocket close code
     assert len(server.connections) == 6
+
+
+async def test_ws_connect_reply_ttl_under_ten_minutes_refreshes_once_and_reconnects() -> None:
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect(ttl=300)  # the JWT is valid for 24 h: only the reply says 300 s
+        await c.accept_subscribes(1)
+        await c.hold()
+
+    tokens = JwtTokens()
+    async with FakeCentrifugoServer([script]) as server:
+        session = ws_session(server, tokens)
+        session.subscribe_products()
+        async with session:
+            await session.connect()
+    assert tokens.refresh_calls == 1  # one refresh per streak, then the connection is kept
+    assert len(server.connections) == 2
+
+
+async def test_ws_a_real_close_code_below_3000_is_counted_and_3000_range_closes_are_not() -> None:
+    attempt = 0
+
+    async def script(c: FakeWsConnection) -> None:
+        nonlocal attempt
+        attempt += 1
+        await c.accept_connect()
+        await c.accept_subscribes(1)
+        # 3000 reconnects without counting; 1000 counts: 5 allowed, the 6th ends the session
+        await c.ws.close(3000 if attempt % 2 else 1000, "x")
+
+    async with FakeCentrifugoServer([script]) as server:
+        session = ws_session(server, JwtTokens())
+        session.subscribe_products()
+        with pytest.raises(LiveConnectionError) as caught:
+            await session.poll(30)
+    assert caught.value.code == 1000
+    assert len(server.connections) == 12  # six closes of 1000, five closes of 3000 between them
 
 
 async def test_ws_close_leaves_no_task_and_no_open_socket() -> None:

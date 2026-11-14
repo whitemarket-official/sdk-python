@@ -22,20 +22,17 @@ from whitemarket._runtime.retry_after import parse_retry_after
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import DecodeError, TransportError
 from whitemarket.live._connection import (
-    QUEUE_SIZE,
     Incoming,
     ServerClosedError,
     StatusFailureError,
+    queue_size,
 )
 from whitemarket.live._envelope import ConnectReply, Disconnect, decode_message
 from whitemarket.live._policy import ConnectInfo, is_personal
 from whitemarket.live._sse_parser import SseParser
 from whitemarket.live.options import LiveOptions
 
-# The pump stops reading (TCP backpressure) when this many events wait for the consumer. The count
-# is lowered so that events x `max_message_bytes` stays within BUFFER_BYTES.
-BUFFER_BYTES: Final = 64 * 1024 * 1024
-MIN_QUEUE_SIZE: Final = 2
+# The pump stops reading (TCP backpressure) when `queue_size` events wait for the consumer.
 _HTTP_OK: Final = range(200, 300)
 
 
@@ -84,8 +81,7 @@ class SseConnection:
         self._queue: asyncio.Queue[str | _Ended] = asyncio.Queue(self._queue_size())
 
     def _queue_size(self) -> int:
-        by_bytes = BUFFER_BYTES // self._options.max_message_bytes
-        return max(MIN_QUEUE_SIZE, min(QUEUE_SIZE, by_bytes))
+        return queue_size(self._options.max_message_bytes)
 
     async def open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         await self.close()

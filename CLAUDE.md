@@ -88,7 +88,7 @@ Every request resends the whole session history, so cost grows quadratically wit
 - Fully typed, `mypy --strict` and pyright strict clean, `py.typed` shipped. Pydantic v2 models for generated types (if ariadne-codegen); high-level models are frozen dataclasses or frozen pydantic models (ADR, be consistent).
 - Money and wear values are `decimal.Decimal`, never `float`. Datetimes are timezone-aware.
 - Context managers (`with` / `async with`) close HTTP clients and live connections.
-- Runtime deps minimal: `httpx`, `pydantic` (if generated layer uses it), `ijson` (export streaming), `centrifuge-python` (WS, async). Extras: `[live]`, `[exports]` if it keeps the base install small.
+- Runtime deps minimal: `httpx`, `pydantic` (if generated layer uses it), `ijson` (export streaming), `websockets` (WS, own Centrifugo protocol client, ADR 0005). Extras: `[live]`, `[exports]` if it keeps the base install small.
 - Secrets as `pydantic.SecretStr` or own `Secret` with redacting `__repr__`/`__str__`.
 - No `# type: ignore` / `# noqa` / `# pragma: no cover` without a specific code, issue reference and reason.
 

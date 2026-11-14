@@ -27,7 +27,7 @@ Not shipped yet: the high-level `orders` (buy orders) module. The generated `ord
 ```bash
 pip install whitemarket-sdk                    # GraphQL client only
 pip install "whitemarket-sdk[exports]"         # + streaming export files (ijson)
-pip install "whitemarket-sdk[live]"            # + WebSocket live updates (centrifuge-python)
+pip install "whitemarket-sdk[live]"            # + WebSocket live updates (websockets)
 pip install "whitemarket-sdk[exports,live]"
 ```
 

@@ -38,7 +38,7 @@ classifiers = [
 
 [project.optional-dependencies]
 exports = ["ijson>=3"]
-live = ["centrifuge-python>=0.7"]
+live = ["websockets>=17"]
 # Test runner only: what the runtime-version matrix installs.
 test = [
   "coverage==7.17.3",
@@ -49,8 +49,8 @@ test = [
   "pytest-asyncio==1.5.0",
   "pytest-cov==7.1.0",
   "respx==0.23.1",
-  # The fake Centrifugo server of the live tests (tests/support/live_servers.py); the client side is
-  # centrifuge-python (extra `live`), which requires websockets>=15,<18. Tests only, never imported by src/.
+  # The fake Centrifugo server of the live tests (tests/support/live_servers.py) runs on the same websockets
+  # the `live` extra installs (ADR 0005); pinned exactly like every test dependency.
   "websockets==17.4",
 ]
 # GraphQL codegen tool, isolated in its own venv (`make install-codegen`): ariadne-codegen 0.19.0 requires
@@ -150,17 +150,10 @@ strict = true
 files = ["src", "examples"]
 warn_unreachable = true
 
-# centrifuge-python 0.7.0 ships annotations but no py.typed marker: mypy reads its source (ADR 0005), see #0
-[[tool.mypy.overrides]]
-module = ["centrifuge", "centrifuge.*"]
-follow_untyped_imports = true
-
 [tool.pyright]
 include = ["src", "examples"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
-# centrifuge-python 0.7.0 has no py.typed marker; pyright reads its annotated source (ADR 0005), see #0
-reportMissingTypeStubs = false
 
 # --- tests -------------------------------------------------------------------
 

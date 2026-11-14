@@ -66,9 +66,8 @@ def classify_close(code: int) -> CloseKind:
 class ConnectInfo:
     """What the session needs from a connection that is open.
 
-    `ping` is the server ping interval in seconds, or `None` when the connection enforces the
-    idle deadline itself (the WebSocket library does). `ttl` is the seconds the token has left,
-    or `None` when it does not expire.
+    `ping` is the server ping interval in seconds, or `None` when no idle deadline applies.
+    `ttl` is the seconds the token has left, or `None` when it does not expire.
     """
 
     ping: int | None

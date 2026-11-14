@@ -17,8 +17,17 @@ from whitemarket.live._envelope import (
 from whitemarket.live._policy import ConnectInfo
 from whitemarket.live.options import LiveOptions, LiveTransport
 
-# Messages a connection may buffer for a consumer that does not read.
+# Messages a connection may buffer for a consumer that does not read, lowered so that
+# messages x `max_message_bytes` stays within BUFFER_BYTES.
 QUEUE_SIZE: Final = 4096
+BUFFER_BYTES: Final = 64 * 1024 * 1024
+MIN_QUEUE_SIZE: Final = 2
+
+
+def queue_size(max_message_bytes: int) -> int:
+    """How many messages a connection buffers (WebSocket and SSE share the rule)."""
+    return max(MIN_QUEUE_SIZE, min(QUEUE_SIZE, BUFFER_BYTES // max_message_bytes))
+
 
 Incoming = Publication | Disconnect | Unsubscribe | Reply | Ping | ConnectReply | OtherMessage
 
@@ -93,4 +102,4 @@ def build_connection(
         return SseConnection(sse_url, user_agent, options)
     from whitemarket.live._ws import WsConnection  # noqa: PLC0415 - optional live extra and import cycle, see #0
 
-    return WsConnection(ws_url, user_agent)
+    return WsConnection(ws_url, user_agent, max_message_bytes=options.max_message_bytes)

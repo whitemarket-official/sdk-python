@@ -9,7 +9,7 @@ While the version is `0.x`, a minor release (`0.2.0`) may contain breaking chang
 ## [0.1.0] - Unreleased
 
 First release of the Python SDK for the WhiteMarket partner API. Requires Python 3.11 or newer (CPython 3.11 to 3.15);
-extras `exports` (`ijson`) and `live` (`centrifuge-python`).
+extras `exports` (`ijson`) and `live` (`websockets`, with an own Centrifugo protocol client).
 
 ### Added
 
@@ -96,8 +96,9 @@ extras `exports` (`ijson`) and `live` (`centrifuge-python`).
 - **No retry key for selling.** Selling mutations have no idempotency key. If an answer is lost, check
   `selling.my_products()` before trying again.
 - **Live updates.** Product prices are assumed to be USD. Events missed while reconnecting are not replayed (no
-  gap-free resume): when `on_connected` reports `reconnected=True`, reload what you need. A WebSocket frame is not
-  size-bounded by the SDK (`centrifuge-python` offers no option).
+  gap-free resume): when `on_connected` reports `reconnected=True`, reload what you need. A WebSocket frame is
+  bounded by `LiveOptions.max_message_bytes` (a longer one ends the connection with close code 1009; a frame can hold
+  several messages).
 - **Batch results and size.** The base of `MarketProductResult.index` (0 or 1) and the server's maximum batch size for
   selling are unconfirmed. The SDK sends 100 items per request (`selling_batch_size`).
 - **Products CSV.** The SDK assumes the CSV header names the same keys as the JSON file.
