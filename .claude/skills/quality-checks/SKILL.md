@@ -7,7 +7,7 @@ description: Use BEFORE claiming Python work is complete or proposing a commit/P
 
 Run **in order**, fix **every** error before the next step (CLAUDE.md rule 0). Claiming "done" with red checks is forbidden.
 
-Tools run from `.venv/bin/` (created by `make install`; `uv` is not on the host). Always call them through `make`.
+Tools run from `.venv/bin/` (created by `make install`, `PM=uv` or `PM=pip`). Always call them through `make`.
 
 ## Full run once; fast loop while working
 
