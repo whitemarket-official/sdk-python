@@ -21,6 +21,9 @@ jobs:
     name: Live smoke (read-only)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # The token lives in this protected environment (branch rule: main), not in a repository secret, so a
+    # workflow_dispatch on another branch cannot read it. The owner creates the environment.
+    environment: live-smoke
     env:
       # A boolean only: the secret value itself is exposed to the smoke step alone.
       HAS_TOKEN: ${{ secrets.WM_PARTNER_TOKEN != '' }}
