@@ -117,8 +117,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the history scan needs every commit
       # The image is pinned by tag and digest in the Makefile.
-      - run: make secrets-scan VERBOSE=1
+      - run: make secrets-scan secrets-scan-history VERBOSE=1
 
   build:
     name: Build sdist and wheel, twine check

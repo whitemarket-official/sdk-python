@@ -7,11 +7,12 @@ description = "Dependencies, caches and local output are not part of the reposit
 paths = [
   '''(^|/)\.venv[^/]*/''',
   '''(^|/)node_modules/''',
-  '''(^|/)var/''',
+  '''^var/''',
+  '''^mutants/''',
   '''(^|/)\.idea/''',
   '''(^|/)\.git/''',
   '''(^|/)\.(mypy|pytest|ruff)_cache/''',
-  '''(^|/)(dist|build)/''',
+  '''^(dist|build)/''',
   # Local env files hold the developer's real token: git-ignored, never committed, so a scan of them only risks
   # printing it. The committed `.env.example` is still scanned (RE2 has no lookahead, hence the explicit names).
   '''(^|/)\.env$''',

@@ -88,6 +88,7 @@ For a change to source files the order is mandatory:
 3. `make check` green;
 4. a security check for changes in auth, transport, token storage, live connections, export downloading or CI workflows
    (and a review of the whole branch before a pull request);
+   `make secrets-scan` (working tree) and `make secrets-scan-history` (full git history, gitleaks) must both pass;
 5. only then call the work done.
 
 ## Rules
