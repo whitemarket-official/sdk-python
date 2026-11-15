@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import httpx
 
 from whitemarket._concurrency import Deadline
+from whitemarket._runtime.attempts import AttemptBudget
 from whitemarket._runtime.body import BodyAccumulator, BodyBytes, BodyError, body_is_gzip
 from whitemarket._runtime.http_errors import http_error_for
 from whitemarket._runtime.log_redaction import redact_headers, redact_url
@@ -106,16 +107,19 @@ class GraphQLTransport:
         operation_type: OperationType,
         body: bytes,
         headers: Mapping[str, Secret],
+        budget: AttemptBudget | None = None,
     ) -> BodyBytes:
         """The body of the 2xx answer.
 
         Raises an `HttpError` subclass for any other status once the retry policy gives up, and
-        `TransportError` when no answer could be read. A mutation is sent once.
+        `TransportError` when no answer could be read. A mutation is sent once. `budget` carries
+        the count of an earlier send of the same call (the 401 replay); the first send of this
+        `post` always happens, retries only while the policy allows the continued count.
         """
         policy = self._config.retry
-        attempt = 0
+        budget = budget if budget is not None else AttemptBudget()
         while True:
-            attempt += 1
+            attempt = budget.next_attempt()
             started = time.monotonic()
             outcome = self._attempt(operation_type, body, headers)
             status = outcome.status if isinstance(outcome, HttpReply) else None

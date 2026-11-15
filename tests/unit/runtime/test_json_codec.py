@@ -1,5 +1,6 @@
 """The JSON codec of the transport: exact numbers in both directions (CLAUDE.md rule 3)."""
 
+import decimal
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -184,3 +185,20 @@ def test_a_decimal_round_trips_through_encode_and_decode() -> None:
     original = {"price": Decimal("0.1000000000000000055511151231257827021181583404541015625")}
 
     assert decode(encode(original)) == original
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param('{"a": 1e99999999999999999999}', id="exponent beyond the decimal module"),
+        pytest.param('{"a": 1e-99999999999999999999}', id="negative exponent beyond it"),
+    ],
+)
+@pytest.mark.parametrize(
+    "trapped", [True, False], ids=["default context", "InvalidOperation untrapped"]
+)
+def test_a_number_the_decimal_module_cannot_hold_is_a_value_error(text: str, trapped: bool) -> None:
+    with decimal.localcontext() as context:
+        context.traps[decimal.InvalidOperation] = trapped
+        with pytest.raises(ValueError, match="decimal range"):
+            decode(text)

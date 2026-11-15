@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import math
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -27,6 +28,12 @@ OTHER = "OTHER-PARTNER"
 ACCESS = jwt(exp=int(T0.timestamp()) + 3600, jti="given")
 
 
+def wall_clock() -> datetime:
+    """The clock the client's token provider uses (the client takes no clock option): a token
+    exchanged here must expire after it, or the provider exchanges again (SDK_SPEC 3.1)."""
+    return datetime.now(UTC)
+
+
 @pytest.fixture
 def make(flavor: Flavor) -> Any:
     made: list[ClientRig] = []
@@ -42,7 +49,7 @@ def make(flavor: Flavor) -> Any:
 
 
 def test_the_partner_token_is_exchanged_then_the_access_token_is_used(make: Any) -> None:
-    token = fresh_token()()
+    token = fresh_token(clock=wall_clock)()
     m = make(token_answer(token), data(test_ping="pong"), partner_token=PARTNER)
 
     assert m.call(m.client.auth.ping()) == "pong"
@@ -56,14 +63,14 @@ def test_the_partner_token_is_exchanged_then_the_access_token_is_used(make: Any)
 
 
 def test_a_secret_works_as_a_partner_token(make: Any) -> None:
-    m = make(token_answer(fresh_token()()), partner_token=Secret(PARTNER))
+    m = make(token_answer(fresh_token(clock=wall_clock)()), partner_token=Secret(PARTNER))
 
     assert m.call(m.client.auth.access_token())
     assert m.script.requests[0].headers["x-partner-token"] == PARTNER
 
 
 def test_auth_access_token_is_cached_and_refresh_forces_an_exchange(make: Any) -> None:
-    mk = fresh_token()
+    mk = fresh_token(clock=wall_clock)
     m = make(token_answer(mk()), token_answer(mk()), partner_token=PARTNER)
 
     first = m.call(m.client.auth.access_token())
@@ -78,7 +85,7 @@ def test_auth_access_token_is_cached_and_refresh_forces_an_exchange(make: Any) -
 
 
 def test_the_generated_layer_shares_the_clients_token_and_transport(make: Any) -> None:
-    token = fresh_token()()
+    token = fresh_token(clock=wall_clock)()
     m = make(
         token_answer(token), data(test_ping="pong"), data(test_ping="again"), partner_token=PARTNER
     )
@@ -157,7 +164,7 @@ def test_a_custom_token_provider_is_used(make: Any, flavor: Flavor) -> None:
 
 def test_a_token_store_is_used_for_the_exchanged_token(make: Any, flavor: Flavor) -> None:
     store = flavor.cls("tokens", "InMemoryTokenStore")()
-    token = fresh_token()()
+    token = fresh_token(clock=wall_clock)()
     m = make(token_answer(token), partner_token=PARTNER, token_store=store)
     m.call(m.client.auth.access_token())
 
@@ -351,7 +358,7 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def test_from_env_reads_the_partner_token(env: pytest.MonkeyPatch, flavor: Flavor) -> None:
     env.setenv("WHITEMARKET_PARTNER_TOKEN", "ENV-PARTNER")
-    script = Script(token_answer(fresh_token()()))
+    script = Script(token_answer(fresh_token(clock=wall_clock)()))
     http = flavor.mock_http(script)
 
     client = flavor.cls("client", "WhiteMarketClient").from_env(http_client=http)

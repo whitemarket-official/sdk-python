@@ -104,8 +104,10 @@ WhiteMarketClient.from_env()                  # WHITEMARKET_PARTNER_TOKEN (and o
 ```
 
 Pass exactly one credential. A Partner Token is exchanged with `auth_token`; the access token is cached, renewed 5
-minutes before it expires, refreshed once on a 401 (the request is then replayed once), and concurrent callers share one
-exchange (single flight). Tokens and Partner Tokens are `whitemarket.Secret` values: `repr` and `str` print `***`;
+minutes before it expires, refreshed once on a 401 (the request is then replayed once, within the same attempt budget:
+a query sends at most `max_attempts` requests), and concurrent callers share one exchange (single flight). A token whose
+`exp` is already past or less than 5 minutes ahead serves the request that asked for it and is exchanged again before
+the next one. Tokens and Partner Tokens are `whitemarket.Secret` values: `repr` and `str` print `***`;
 `secret.reveal()` returns the text.
 
 **Several processes or workers**: share one `TokenStore` (`get()`, `set(token, expires_at)`, `clear()`; the async client
@@ -312,7 +314,8 @@ decodes to an unknown pseudo-member (`is_unknown`), a new event type to `Unknown
   502, 503 and 504, with exponential backoff and full jitter (`RetryPolicy`: base 0.5 s, factor 2, cap 30 s). A 429 or
   503 with `Retry-After` is not retried: you get `RateLimitError` / `ServiceUnavailableError` with `retry_after` at once.
 - **Mutations are never retried** (there is no switch). A 401 refreshes the token once and replays once, because it means
-  the request was rejected before it ran.
+  the request was rejected before it ran. The replay counts against the same attempt budget: a query sends at most
+  `max_attempts` requests (a 401 on the last attempt is still replayed once), a mutation at most two.
 - Export GETs are retried on 429 and 5xx; live connections reconnect with backoff.
 - `Timeouts(connect=10, request=30)` seconds. `RetryPolicy.none()` disables query retries.
 

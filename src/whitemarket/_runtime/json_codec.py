@@ -1,7 +1,7 @@
 """JSON codec of the transport: no binary float on the way in or out (CLAUDE.md rule 3)."""
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -19,6 +19,21 @@ class RequestNotSentError(ValueError, TypeError):
 
 def _refuse_constant(name: str) -> object:
     raise ValueError(f"non-finite number {name} in JSON")
+
+
+def _decimal(text: str) -> Decimal:
+    """A JSON fraction or exponent as `Decimal`. One the decimal module cannot hold (an exponent
+    such as `1e99999999999999999999`) is a `ValueError` like any other unreadable number, not a
+    `decimal.InvalidOperation` that callers catching `ValueError` would let escape. A caller's
+    context with that trap off yields NaN instead, which is refused the same way."""
+    try:
+        value = Decimal(text)
+    except ArithmeticError:
+        pass
+    else:
+        if value.is_finite():
+            return value
+    raise ValueError("a number in the JSON text is out of the decimal range")
 
 
 def _key(key: object) -> str:
@@ -40,9 +55,17 @@ def _finite(value: Decimal) -> Decimal:
     return value
 
 
-def decode(body: str | bytes | bytearray) -> Any:
-    """Parse JSON text: fractions and exponents become `Decimal`, integers stay exact ints."""
-    return json.loads(body, parse_float=Decimal, parse_constant=_refuse_constant)
+def decode(
+    body: str | bytes | bytearray, *, parse_int: Callable[[str], object] | None = None
+) -> Any:
+    """Parse JSON text: fractions and exponents become `Decimal`, integers stay exact ints.
+
+    `parse_int` replaces the integer conversion (the JWT reader clamps instead of failing on an
+    integer longer than Python's digit limit).
+    """
+    return json.loads(
+        body, parse_float=_decimal, parse_int=parse_int, parse_constant=_refuse_constant
+    )
 
 
 def to_plain(value: object) -> object:

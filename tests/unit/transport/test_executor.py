@@ -228,3 +228,19 @@ def test_an_integer_too_long_for_python_is_a_decode_error(make: Any) -> None:
 
     with pytest.raises(DecodeError):
         run(stack)
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        pytest.param(b"1e99999999999999999999999", id="exponent beyond the decimal module"),
+        pytest.param(b"1e-99999999999999999999", id="negative exponent beyond the decimal module"),
+    ],
+)
+def test_a_number_the_decimal_module_cannot_hold_is_a_decode_error(
+    make: Any, number: bytes
+) -> None:
+    stack, _ = make(reply(200, b'{"data": {"a": ' + number + b"}}"))
+
+    with pytest.raises(DecodeError):
+        run(stack)

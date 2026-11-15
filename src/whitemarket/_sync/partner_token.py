@@ -14,9 +14,6 @@ from whitemarket._sync.tokens import InMemoryTokenStore, TokenStore
 from whitemarket.errors.base import DecodeError
 
 REFRESH_MARGIN = timedelta(minutes=5)
-# A token is kept at least this long, so one shorter than the margin is not exchanged on every
-# call; if the server rejects it earlier, the 401 path renews it.
-MIN_LIFETIME = 2 * REFRESH_MARGIN
 
 
 def _utc_now() -> datetime:
@@ -27,9 +24,10 @@ class PartnerTokenProvider:
     """Exchanges the Partner Token with `auth_token` and keeps the JWT in a `TokenStore`.
 
     The JWT is reused until 5 minutes before it expires (`exp`, read without verifying the
-    signature; 24 h when unreadable). `auth_token` is rate limited, so a token another worker
-    stored is reused. Refreshing is single-flight: callers that arrive while an exchange runs wait
-    for it and share its result.
+    signature; 24 h when unreadable). A token whose `exp` is past or within those 5 minutes serves
+    the request that asked for it and is exchanged again before the next one (SDK_SPEC 3.1).
+    `auth_token` is rate limited, so a token another worker stored is reused. Refreshing is
+    single-flight: callers that arrive while an exchange runs wait for it and share its result.
     """
 
     def __init__(
@@ -120,7 +118,5 @@ class PartnerTokenProvider:
         token = (self._exchange_client.auth_token()).auth_token.access_token
         if not is_valid_bearer_token(token.reveal()):
             raise DecodeError("not a valid bearer token", ("auth_token", "accessToken"))
-        now = self._clock()
-        expires_at = max(token_expiry(token.reveal(), now), now + MIN_LIFETIME)
-        self._store.set(token, expires_at)
+        self._store.set(token, token_expiry(token.reveal(), self._clock()))
         return token

@@ -21,6 +21,7 @@ from whitemarket import RetryPolicy, Secret, StoredToken
 from whitemarket.errors import AuthenticationError, DecodeError, ServiceUnavailableError
 
 AUTH_ENDPOINT_QUERY = "auth_token"
+HTTP_OK = 200
 
 
 @pytest.fixture
@@ -100,18 +101,45 @@ def test_the_margin_boundary(
     assert (stack.handler.count == 2) is exchanged
 
 
-def test_a_token_shorter_than_the_margin_is_kept_ten_minutes(
+@pytest.mark.parametrize(
+    ("exp_offset", "exchanged_again"),
+    [
+        pytest.param(-10, True, id="exp in the past: exchanged before the next request"),
+        pytest.param(0, True, id="exp is now: exchanged before the next request"),
+        pytest.param(60, True, id="exp within the margin: exchanged before the next request"),
+        pytest.param(300, True, id="exp exactly at the margin: exchanged before the next request"),
+        pytest.param(301, False, id="exp 1 s past the margin: served from the store"),
+    ],
+)
+def test_a_received_token_serves_its_request_and_an_expired_one_is_not_served_again(
+    flavor: Flavor, stacks: list[Stack], exp_offset: int, exchanged_again: bool
+) -> None:
+    received = jwt(exp=int(T0.timestamp()) + exp_offset, jti=1)
+    later = jwt(exp=int(T0.timestamp()) + 3600, jti=2)
+    stack = build(stacks, flavor, Script(token_answer(received), token_answer(later)))
+
+    first = stack.run(stack.partner.access_token())
+    second = stack.run(stack.partner.access_token())
+
+    assert first == Secret(received), "a token just received serves the request that asked"
+    assert second == Secret(later if exchanged_again else received)
+    assert stack.handler.count == (2 if exchanged_again else 1)
+
+
+def test_an_expired_token_is_exchanged_before_the_next_request_without_a_401(
     flavor: Flavor, stacks: list[Stack]
 ) -> None:
-    short = jwt(exp=int(T0.timestamp()) + 60, jti=1)
-    stack = build(stacks, flavor, Script(token_answer(short)))
+    expired = jwt(exp=int(T0.timestamp()) - 10, jti=1)
+    valid = jwt(exp=int(T0.timestamp()) + 3600, jti=2)
+    script = Script(token_answer(expired), api_ok(), token_answer(valid), api_ok())
+    stack = build(stacks, flavor, script)
 
-    stack.run(stack.partner.access_token())
-    stack.clock.advance(minutes=4)
-    stack.run(stack.partner.access_token())
+    stack.query()
+    stack.query()
 
-    assert stack.handler.count == 1, "a 60 s token is not exchanged on every call"
-    assert (stack.run(stack.store.get()).expires_at - T0).total_seconds() == 600
+    api = [r for r in script.requests if not is_auth_request(r)]
+    assert [r.headers["authorization"] for r in api] == [f"Bearer {expired}", f"Bearer {valid}"]
+    assert len(script.requests) == 4, "two exchanges, two requests, no 401 round trip"
 
 
 def test_an_unreadable_exp_falls_back_to_24_hours(flavor: Flavor, stacks: list[Stack]) -> None:
@@ -363,25 +391,42 @@ def test_a_custom_provider_value_that_is_not_a_bearer_token_is_refused_and_nothi
     assert bad.strip() == "" or bad not in str(caught.value)
 
 
-def test_the_401_replay_starts_a_fresh_attempt_budget_as_the_php_sdk_does(
-    flavor: Flavor, stacks: list[Stack]
+@pytest.mark.parametrize(
+    ("kind", "statuses"),
+    [
+        pytest.param("query", [503, 503, 401, 503], id="401 last: one replay, no retry"),
+        pytest.param("query", [503, 503, 401, 200], id="401 last: the replay succeeds"),
+        pytest.param("query", [401, 503, 503], id="401 first: the replay uses attempts 2-3"),
+        pytest.param("query", [503, 401, 503], id="401 second: the replay is attempt 3"),
+        pytest.param("query", [503, 401, 200], id="401 second: the replay succeeds"),
+        pytest.param("mutation", [401, 503], id="mutation: sent at most twice"),
+    ],
+)
+def test_the_401_replay_shares_the_attempt_budget_of_the_call(
+    flavor: Flavor, stacks: list[Stack], kind: str, statuses: list[int]
 ) -> None:
-    """Pins parity with PHP `GraphQLExecutor::postWithOneReplay`: the replay is a second
-    `transport.post`, so a query can send up to 2 x max_attempts requests (3 + 3 here). Whether the
-    budget should be shared across the replay is an open question for SDK_SPEC 1.4."""
-    api_answers = [reply(503), reply(503), reply(401), reply(503), reply(503), reply(503)]
+    """SDK_SPEC 1.4: a query sends at most `max_attempts` requests plus the token exchange; a 401
+    on the last attempt is still replayed once and that replay is not retried. `statuses` is the
+    whole expected sequence of sends: one send more fails the handler with an IndexError."""
     sent: list[int] = []
+    exchanges: list[int] = []
     make_token = fresh_token()
 
     def handler(request: httpx.Request) -> httpx.Response:
         if is_auth_request(request):
+            exchanges.append(1)
             return token_answer(make_token()).build()
-        sent.append(1)
-        return api_answers[len(sent) - 1].build()
+        status = statuses[len(sent)]
+        sent.append(status)
+        return (api_ok() if status == HTTP_OK else reply(status)).build()
 
     stack = build(stacks, flavor, handler, retry=RetryPolicy(max_attempts=3, base_delay=0))
 
-    with pytest.raises(ServiceUnavailableError):
-        stack.query()
+    if statuses[-1] == HTTP_OK:
+        assert stack.query(kind) == {"test_ping": "pong"}
+    else:
+        with pytest.raises(ServiceUnavailableError):
+            stack.query(kind)
 
-    assert len(sent) == 6
+    assert sent == statuses
+    assert len(exchanges) == 2, "the first token and the one refresh after the 401"

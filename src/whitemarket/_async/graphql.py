@@ -6,6 +6,7 @@ from typing import Any, Final, cast
 from whitemarket._async.credentials import AsyncCredentials
 from whitemarket._async.transport import AsyncGraphQLTransport
 from whitemarket._runtime import json_codec
+from whitemarket._runtime.attempts import AttemptBudget
 from whitemarket._runtime.body import BodyBytes
 from whitemarket._runtime.json_codec import RequestNotSentError
 from whitemarket._runtime.operation import OperationType, effective_operation_type
@@ -24,8 +25,9 @@ class AsyncGraphQLExecutor:
     A 401 refreshes the credentials once and replays the request once, mutations included: the
     JWT check runs before the resolver, so a 401 means the request was not executed (SDK_SPEC 1.4,
     the one exception to "a mutation is never retried"). A second 401 is an `AuthenticationError`.
-    The replay is a second `transport.post` with its own retry budget, as in the PHP SDK
-    (docs/DEVIATIONS.md, Accepted limitations).
+    The replay shares the call's attempt budget: a query sends at most `max_attempts` requests in
+    total, a 401 on the last attempt is still replayed once and not retried; a mutation is sent at
+    most twice.
     """
 
     def __init__(self, transport: AsyncGraphQLTransport, credentials: AsyncCredentials) -> None:
@@ -50,13 +52,14 @@ class AsyncGraphQLExecutor:
         self, name: str, operation_type: OperationType, body: bytes
     ) -> BodyBytes:
         headers = await self._credentials.headers(name)
+        budget = AttemptBudget()
         try:
-            return await self._transport.post(name, operation_type, body, headers)
+            return await self._transport.post(name, operation_type, body, headers, budget)
         except AuthenticationError:
             replay = await self._credentials.headers_after_rejection(headers)
             if replay is None:
                 raise
-        return await self._transport.post(name, operation_type, body, replay)
+        return await self._transport.post(name, operation_type, body, replay, budget)
 
 
 def _encode(document: str, operation_name: str | None, variables: Mapping[str, object]) -> bytes:

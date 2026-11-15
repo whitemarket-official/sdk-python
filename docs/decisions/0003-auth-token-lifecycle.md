@@ -23,12 +23,23 @@ SDK_SPEC 1.4 (401: refresh once, replay once, mutations too), 2 (`partner_token`
   stored a new one) and refresh only if it is the rejected one; a replay is offered only with a token different from
   the rejected one, so a fixed `access_token` is never replayed. Mutations are replayed too: a 401 means the request
   was rejected before execution; this is the one exception to CLAUDE.md rule 2 (owner confirmed for PHP 2026-10-31).
-- Expiry: lifetime `exp - iat` when both are integers (not bool), `iat >= 0` and `exp > iat`, else `exp - now`, counted
-  from the local clock (skew cannot shorten it); missing, unreadable (bad base64 or JSON, parts != 3, a float `exp`,
-  JSON nested too deep) or non-positive gives 24 h; never longer than 24 h. The payload is decoded with the SDK JSON
-  codec (floats become `Decimal`, so a float `exp` is "unreadable"). Refresh 5 minutes before expiry
-  (`now < expires_at - 5 min` is "valid": at exactly the margin it refreshes); a token is kept at least 10 minutes so a
-  short one is not exchanged on every call.
+- Expiry (changed 2026-11-14, owner decision, SDK_SPEC 3.1; PHP made the same change): lifetime `exp - now` by the
+  local clock, capped by `exp - iat` when `iat >= 0` and `exp > iat` (so a host clock behind the issuer does not
+  lengthen it; a host clock ahead of the issuer now shortens it), and never longer than 24 h. `exp` and `iat` are
+  NumericDates: an integer (not bool), or a fraction or exponent, which the SDK JSON codec reads as a finite `Decimal`
+  and which is rounded down; a value outside the 64-bit integer range is clamped to its end (parity with the sister
+  SDKs, and `1E+999999999` is never expanded into an integer); an integer longer than 19 digits is clamped while
+  parsing, so Python's 4300-digit conversion limit cannot make a payload unreadable. The local clock is rounded up
+  to whole seconds, so the expiry is at most 1 s early and never after `exp`. Missing or non-numeric `exp`, or an unreadable payload
+  (bad base64 or JSON, parts != 3, `NaN` / `Infinity` literals, JSON nested too deep), gives 24 h. Refresh 5 minutes
+  before expiry (`now < expires_at - 5 min` is "valid": at exactly the margin it refreshes), so an `exp` in the past or
+  within the margin counts as expired at any later read of the store: such a token serves the request that asked for it
+  and the next request exchanges again, instead of a 401 round trip. Before: a past `exp` gave 24 h, `exp - iat` alone
+  set the lifetime, a fractional `exp` was unreadable, and every token was kept at least 10 minutes.
+- Attempt budget across the replay (changed 2026-11-14, SDK_SPEC 1.4): the first send and the replay share one
+  `_runtime.attempts.AttemptBudget`, so a query sends at most `max_attempts` requests plus the exchange; a 401 on the
+  last attempt is still replayed once and that replay is not retried; a mutation is sent at most twice. Before, the
+  replay started a fresh retry loop (up to 2 x `max_attempts` sends).
 - A stored or received token that is not an RFC 6750 `b64token` is never sent: a poisoned store entry is cleared and
   exchanged again; a bad server value is a `DecodeError` and is not stored. A partner token must be a valid header value
   (visible ASCII, no leading/trailing whitespace); errors never echo it.

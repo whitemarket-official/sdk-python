@@ -7,8 +7,8 @@ here. This repository never edits the sister repositories.
 | # | Question | Decision | Where |
 |---|---|---|---|
 | 1 | Install `uv` | Installed. Developers choose `uv` or `pip` (no poetry): `uv.lock` + hash-pinned `requirements-*.txt`, `make install PM=uv\|pip` | this repo |
-| 17 | JWT expiry | A past `exp`, or an `exp` within the 5 min margin, counts as expired: refresh before sending, no extra 401 round trip | **SPEC 3.1 + PHP first**, then Python |
-| 18 | Query attempt budget across the 401 replay | One budget per call: the replay uses one of the `max_attempts`; total sends of a query <= `max_attempts` (+ the token exchange); a replay after a 401 on the last attempt still happens once | **SPEC 1.4 + PHP first**, then Python |
+| 17 | JWT expiry | A past `exp`, or an `exp` within the 5 min margin, counts as expired: refresh before sending, no extra 401 round trip | **SPEC 3.1 + PHP first**, then Python; SPEC + PHP done 2026-11-14, Python done 2026-11-15 |
+| 18 | Query attempt budget across the 401 replay | One budget per call: the replay uses one of the `max_attempts`; total sends of a query <= `max_attempts` (+ the token exchange); a replay after a 401 on the last attempt still happens once | **SPEC 1.4 + PHP first**, then Python; SPEC + PHP done 2026-11-14, Python done 2026-11-15 |
 | 26 | Cancellation (`CancelledError` / `KeyboardInterrupt`) during `market_buy` | Keep: propagates at once, no reconciliation; README tells callers to persist `custom_id` and check `deals.get(custom_id)` (Python idiom; recorded in DEVIATIONS) | this repo, no change |
 | 29 | Reconciliation accepts a found deal only with the same `customId` | Adopt (Python has it): a mismatch or null `customId` is a failed lookup, attempts continue | **SPEC 3.3 + PHP** |
 | V1 r5 | Batch row identity checked before money/wear decode | Adopt (Python has it): an identity mismatch makes the chunk Unknown even when the product cannot be decoded | **SPEC 3.5 rules 3/7 + PHP** |
