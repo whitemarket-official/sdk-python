@@ -82,6 +82,12 @@ def sse_data(payload: dict[str, Any]) -> bytes:
     return b"data: " + json.dumps(payload).encode() + b"\n\n"
 
 
+def _is_proactor_accept(task: "asyncio.Task[Any]") -> bool:
+    """The accept loop of Windows' `IocpProactor` (`asyncio.windows_events`)."""
+    name = getattr(task.get_coro(), "__qualname__", "")
+    return isinstance(name, str) and name.endswith("accept.<locals>.accept_coro")
+
+
 class FakeSseServer:
     """Serves one `SseScript` per connection, in order (the last repeats). Records the requests."""
 
@@ -105,6 +111,13 @@ class FakeSseServer:
         assert self._server is not None
         self._server.close()
         await self._server.wait_closed()
+        # [observed 2026-11-15, CI on Windows] the proactor's accept task is cancelled by
+        # `close()` but ends only on a later loop turn; tests that check for leaked tasks would
+        # see it. Let it end (a bounded number of turns).
+        for _ in range(100):
+            if not any(_is_proactor_accept(task) for task in asyncio.all_tasks()):
+                break
+            await asyncio.sleep(0)
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:

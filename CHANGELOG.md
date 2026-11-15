@@ -41,6 +41,8 @@ extras `exports` (`ijson`) and `live` (`websockets`, with an own Centrifugo prot
   `wait_for_deal_event`. WebSocket needs the `live` extra (ADR 0005). `LiveConnectionError` now carries `code` and
   `reason`. SSE accepts publications that the server sends before the connect reply and delivers them after
   `on_connected` (before this, such a connect failed with a `TransportError` and was retried).
+  `LiveSession.close()` from another thread always wakes a consumer blocked in `poll()` (before this, a
+  `poll()` that ended in the same loop turn as the close could wait forever).
 - High-level models (`whitemarket.models`): `Page`, `PageRequest`, `Product`, `ProductHistory`, `InventoryItem`, `Sticker`,
   `Deal`, `DealState`, `BuyResult`, `DealStatus` (with `is_in_progress`, `is_exchanged`, `is_successful`, `is_failed`,
   `is_reversed`, `is_final`, `awaiting_trade_protection`), `DealCancelReason`, `DealAction`, `TransactionReason` and the

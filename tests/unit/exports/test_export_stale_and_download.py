@@ -160,6 +160,7 @@ def test_a_download_has_no_size_limit(flavor: Flavor, rigs: Any, tmp_path: Path)
 
 
 @each_flavor
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_a_download_gets_the_mode_of_a_new_file(flavor: Flavor, rigs: Any, tmp_path: Path) -> None:
     rig = rigs(flavor, ok(PRICES_BODY))
     target = tmp_path / "p.json"

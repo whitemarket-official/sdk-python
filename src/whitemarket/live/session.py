@@ -98,6 +98,12 @@ class _Loop:
                 task.cancel()
             if tasks:
                 self._loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+            # Shut down async generators, and above all run one more turn of the loop before
+            # `close()` (keep this call even without async generators): a task that finished in
+            # the iteration that stopped the loop has its callbacks still queued, among them the
+            # one that hands its result to the thread waiting in `submit(...).result()`. Dropped
+            # by `close()`, that thread would wait forever (observed in CI, 2026-11-15).
+            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             self._loop.close()
 
     def submit(self, coroutine: Coroutine[Any, Any, _T]) -> "Future[_T]":

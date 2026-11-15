@@ -1,5 +1,6 @@
 """The threaded `LiveSession`: `close()` wakes a blocked consumer, and no thread outlives it."""
 
+import asyncio
 import gc
 import threading
 import time
@@ -8,7 +9,7 @@ from collections.abc import Callable
 from whitemarket._runtime.secret import Secret
 from whitemarket.live.events import LiveEvent
 from whitemarket.live.options import LiveOptions, LiveTransport
-from whitemarket.live.session import LiveSession
+from whitemarket.live.session import LiveSession, _Loop
 
 THREAD_NAME = "whitemarket-live"
 
@@ -76,3 +77,19 @@ def test_a_session_dropped_without_close_leaves_no_thread() -> None:
     del session
     gc.collect()
     assert _wait_until(lambda: _live_threads() == [])
+
+
+def test_a_call_that_finishes_as_the_loop_stops_still_returns_its_result() -> None:
+    # [observed 2026-11-15, CI on Linux] `close()` stopped the loop in the same iteration in which
+    # the consumer's `poll()` finished: the callback that hands the result to the waiting thread
+    # was still queued, `loop.close()` dropped it, and the consumer waited forever.
+    loop = _Loop()
+
+    async def finish_as_the_loop_stops() -> str:
+        asyncio.get_running_loop().stop()
+        return "result"
+
+    future = loop.submit(finish_as_the_loop_stops())
+    assert future.result(timeout=5) == "result"
+    loop.stop()
+    assert _live_threads() == []
