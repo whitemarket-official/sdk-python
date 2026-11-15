@@ -14,8 +14,8 @@ code gets fixed.
 
 | Topic | Decision |
 |---|---|
-| GitHub org | `https://github.com/whitemarket-official` |
-| Repository names (already created, public, in the org) | `whitemarket-official/sdk-php`, `sdk-golang`, `sdk-js`, `sdk-ts`, `sdk-python`, `sdk-csharp`, `sdk-rust` |
+| GitHub owner | `https://github.com/whitemarket-official`: a corporate **personal account, not an organization**. No teams: `CODEOWNERS`, rulesets and environment reviewers name the account `@whitemarket-official`. A PR author cannot approve their own PR, so the `main` ruleset requires a PR and the CI status check but no approval and no code-owner review; the human review of agent configuration and CI paths is the owner's check of the diff before the merge. Rulesets and environment reviewers work because the repositories are public |
+| Repository names (already created, public, owned by that account) | `whitemarket-official/sdk-php`, `sdk-golang`, `sdk-js`, `sdk-ts`, `sdk-python`, `sdk-csharp`, `sdk-rust` |
 | License | MIT (confirm with the owner before the first public release) |
 | Package names (check availability in the registry before publishing) | PHP `whitemarket/sdk` (Packagist), namespace `WhiteMarket\Sdk`; Go module `github.com/whitemarket-official/sdk-golang` (must equal the repo path), package `whitemarket`; npm TS `@whitemarket/sdk`; npm JS `@whitemarket/sdk-js`; Python dist `whitemarket-sdk`, import `whitemarket`; NuGet `WhiteMarket.Sdk`, namespace `WhiteMarket.Sdk`; crate `whitemarket-sdk`, lib `whitemarket` |
 | Versioning | SemVer. `0.x` until the high-level API is reviewed and frozen; then `1.0.0`. One version line per SDK, independent between languages |

@@ -25,6 +25,9 @@ here. This repository never edits the sister repositories.
 | 27 | Batch chunk answered 401 after the refresh + replay | `NOT_SENT` (server rejected before execution, SDK_SPEC 1.4); a client-thrown exception stays `UNKNOWN`. PHP: make the distinction explicit (server 401 answer vs client exception) | this repo, no change; **PHP: wording/test** |
 | 30 | `deals.wait_for(live=...)`: early wake-up rate and clock | Keep: early re-check at most once per 1 s after the poll began; the deadline uses a monotonic clock | this repo, no change; **SPEC 3.4 rules 4/8 + PHP** |
 | 6, 11, 12, 2, 19, 20, 21 | Unknown enum pseudo-member; sync total timeout; sync/async store and provider twins; superpowers plugin; `#0` issue placeholder; ijson segfault upstream; re-exported generated enums | All defaults kept. `superpowers`: install from a local terminal (`/plugin install superpowers` is not available over Remote Control). `#0`: replace with a real "suppressions to review" issue after the first push | this repo |
+| 36 | Live token exchange answered `person.action_too_many_requests` | Keep (owner 2026-11-15): the session treats it as any `WhiteMarketError` and backs off normally from 0.5 s (`live/_engine.py` `_token_for_attempt`); no SPEC change | this repo, no change |
+| 37 | Three Python-only details of b21b2cd: local clock rounded up to whole seconds (expiry never after `exp`), clock normalised to UTC, a JSON number outside the decimal range refused as a decode error | Adopt (owner 2026-11-15): **SPEC 3.1 + PHP** first; this repo already has them (`_runtime/jwt.py`, `_runtime/json_codec.py`) | PHP session |
+| 3b | Orders module (decision 3) | Confirmed 2026-11-15: 0.2.0 | 0.2.0 |
 
 ## Still for the backend team (not owner decisions)
 
