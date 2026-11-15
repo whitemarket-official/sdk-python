@@ -238,6 +238,24 @@ async def test_sse_reconnects_after_the_stream_ends_and_resends_the_channel_list
     assert all(r["query"]["cf_connect"][0].count(PRODUCTS) == 1 for r in server.requests)
 
 
+async def test_sse_a_publication_before_the_connect_reply_is_delivered_after_connected() -> None:
+    # [observed 2026-11-15] the live SSE endpoint sometimes sends publications before the reply.
+    early = sse_data(pub_message(PRODUCTS, "market_product_added", PRODUCT_CONTENT))
+    script = SseScript(steps=[early, sse_data(connect_reply())])
+    seen: list[str] = []
+    async with FakeSseServer([script]) as server:
+        session = sse_session(server, JwtTokens())
+        session.subscribe_products()
+        session.on_connected(lambda reconnected: seen.append(f"connected {reconnected}"))
+        session.on_error(lambda error: seen.append(f"error {type(error).__name__}"))
+        async with session:
+            event = await session.poll(5)
+    assert isinstance(event, ProductAdded)
+    assert event.id == PRODUCT_CONTENT["id"]
+    assert seen == ["connected False"]
+    assert len(server.requests) == 1
+
+
 async def test_sse_401_refreshes_once_and_a_second_401_is_an_authentication_error() -> None:
     tokens = JwtTokens()
     async with FakeSseServer([SseScript(status=401)]) as server:

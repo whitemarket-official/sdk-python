@@ -1,9 +1,12 @@
 """SseConnection against a fake SSE server on loopback."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import tracemalloc
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 
@@ -11,7 +14,12 @@ from support.flavors import jwt
 from support.live_servers import FakeSseServer, SseScript, connect_reply, pub_message, sse_data
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import DecodeError, TransportError
-from whitemarket.live._connection import StatusFailureError
+from whitemarket.live._connection import (
+    BUFFER_BYTES,
+    ServerClosedError,
+    StatusFailureError,
+    queue_size,
+)
 from whitemarket.live._envelope import Ping, Publication
 from whitemarket.live._sse import SseConnection
 from whitemarket.live.options import LiveOptions
@@ -28,8 +36,47 @@ CONTENT = {
 }
 
 
-def connection(server: FakeSseServer) -> SseConnection:
-    return SseConnection(server.url, "test-agent/1", LiveOptions(), trust_env=False)
+def connection(
+    server: FakeSseServer,
+    options: LiveOptions | None = None,
+    *,
+    early_text_limit: int = BUFFER_BYTES,
+) -> SseConnection:
+    return SseConnection(
+        server.url,
+        "test-agent/1",
+        options or LiveOptions(),
+        trust_env=False,
+        early_text_limit=early_text_limit,
+    )
+
+
+def product_message(product_id: str) -> dict[str, Any]:
+    content = {**CONTENT, "id": product_id}
+    return pub_message("market_products_updates", "market_product_added", content)
+
+
+def product_event(product_id: str) -> bytes:
+    return sse_data(product_message(product_id))
+
+
+def published_product_id(message: object) -> str:
+    assert isinstance(message, Publication)
+    return str(json.loads(message.data["message"])["content"]["id"])
+
+
+@contextlib.asynccontextmanager
+async def serving(
+    scripts: list[SseScript], *, early_text_limit: int = BUFFER_BYTES
+) -> AsyncIterator[SseConnection]:
+    """A connection to a fake server, closed even when the test fails: a stream left open would
+    make the server's shutdown wait forever."""
+    async with FakeSseServer(scripts) as server:
+        conn = connection(server, early_text_limit=early_text_limit)
+        try:
+            yield conn
+        finally:
+            await conn.close()
 
 
 async def test_the_request_is_a_get_with_cf_connect_and_no_compression() -> None:
@@ -132,15 +179,96 @@ async def test_no_connect_reply_in_time_is_a_transport_error() -> None:
         assert server.open_streams == 0
 
 
+async def test_messages_before_the_connect_reply_are_kept_and_read_first_in_order() -> None:
+    # [observed 2026-11-15] the live SSE endpoint sometimes sends publications before the reply.
+    script = SseScript(
+        steps=[
+            product_event("early-1"),
+            b"data: {}\n\n",
+            b"data: nope\n\n",
+            product_event("early-2"),
+            sse_data(connect_reply(ttl=None)),
+            product_event("late"),
+        ]
+    )
+    async with serving([script]) as conn:
+        info = await conn.open(Secret(TOKEN), [], 5.0)
+        assert (info.ping, info.ttl) == (25, None)  # the connect reply, wherever it came
+        assert published_product_id(await conn.read(2.0)) == "early-1"
+        assert isinstance(await conn.read(2.0), Ping)
+        with pytest.raises(DecodeError):  # as after the reply: reported, the stream continues
+            await conn.read(2.0)
+        assert published_product_id(await conn.read(2.0)) == "early-2"
+        assert published_product_id(await conn.read(2.0)) == "late"
+        assert await conn.read(0.05) is None
+
+
+async def test_more_messages_before_the_connect_reply_than_the_queue_holds_are_all_kept() -> None:
+    # [observed 2026-11-15] the live endpoint sent more than 64 publications (the default queue
+    # size) before the reply: a count limit failed the connect.
+    count = 2 * queue_size(LiveOptions().max_message_bytes)
+    early = [product_event(f"p{n:04}") for n in range(count)]
+    async with serving([SseScript(steps=[*early, sse_data(connect_reply())])]) as conn:
+        await conn.open(Secret(TOKEN), [], 5.0)
+        assert [published_product_id(await conn.read(2.0)) for _ in range(count)] == [
+            f"p{n:04}" for n in range(count)
+        ]
+
+
 @pytest.mark.parametrize(
-    "first", [b"data: {}\n\n", b"data: nope\n\n"], ids=["not-a-connect-reply", "not-json"]
+    ("count", "accepted"),
+    [(3, True), (4, False)],
+    ids=["text exactly at the limit -> connected", "one message over -> transport error"],
 )
-async def test_a_first_message_that_is_not_a_connect_reply_is_a_transport_error(
-    first: bytes,
+async def test_messages_before_the_connect_reply_are_bounded_by_their_text_size(
+    count: int, accepted: bool
 ) -> None:
-    async with FakeSseServer([SseScript(steps=[first])]) as server:
+    # the raw `data:` text, serialised as `sse_data` does; every `pN` below has the same length
+    limit = 3 * len(json.dumps(product_message("p0")))
+    early = [product_event(f"p{n}") for n in range(count)]
+    script = SseScript(steps=[*early, sse_data(connect_reply())])
+    async with serving([script], early_text_limit=limit) as conn:
+        if accepted:
+            await conn.open(Secret(TOKEN), [], 5.0)
+            assert published_product_id(await conn.read(2.0)) == "p0"
+        else:
+            with pytest.raises(TransportError, match="before the connect reply"):
+                await conn.open(Secret(TOKEN), [], 5.0)
+
+
+async def test_a_stream_that_ends_before_the_connect_reply_is_a_transport_error() -> None:
+    async with serving([SseScript(steps=[product_event("early")], hold=False)]) as conn:
+        with pytest.raises(TransportError, match="ended before the connect reply"):
+            await conn.open(Secret(TOKEN), [], 5.0)
+
+
+async def test_a_disconnect_before_the_connect_reply_is_a_server_close() -> None:
+    disconnect = sse_data({"disconnect": {"code": 3501, "reason": "bad request"}})
+    script = SseScript(steps=[product_event("early"), disconnect, sse_data(connect_reply())])
+    async with serving([script]) as conn:
+        with pytest.raises(ServerClosedError) as caught:
+            await conn.open(Secret(TOKEN), [], 5.0)
+    assert (caught.value.code, caught.value.reason) == (3501, "bad request")
+
+
+async def test_a_read_after_close_does_not_return_early_messages_never_read() -> None:
+    script = SseScript(steps=[product_event("early"), sse_data(connect_reply())])
+    async with serving([script]) as conn:
+        await conn.open(Secret(TOKEN), [], 5.0)
+        await conn.close()
         with pytest.raises(TransportError):
-            await connection(server).open(Secret(TOKEN), [], 5.0)
+            await conn.read(2.0)
+
+
+async def test_a_reopened_connection_does_not_replay_the_early_messages_of_the_last_one() -> None:
+    scripts = [
+        SseScript(steps=[product_event("old"), sse_data(connect_reply())]),
+        SseScript(steps=[sse_data(connect_reply()), product_event("new")]),
+    ]
+    async with serving(scripts) as conn:
+        await conn.open(Secret(TOKEN), [], 5.0)
+        await conn.open(Secret(TOKEN), [], 5.0)
+        assert published_product_id(await conn.read(2.0)) == "new"
 
 
 async def test_the_end_of_the_stream_is_a_transport_error_on_read() -> None:
@@ -175,7 +303,7 @@ async def test_an_oversized_event_ends_the_stream() -> None:
     big = b"data: " + b"x" * 5000 + b"\n\n"
     script = SseScript(steps=[sse_data(connect_reply()), big])
     async with FakeSseServer([script]) as server:
-        conn = SseConnection(server.url, "ua", LiveOptions(max_message_bytes=1024), trust_env=False)
+        conn = connection(server, LiveOptions(max_message_bytes=1024))
         await conn.open(Secret(TOKEN), [], 5.0)
         with pytest.raises(TransportError):
             await conn.read(2.0)
@@ -242,9 +370,7 @@ async def test_a_flood_of_nested_events_keeps_memory_bounded_by_the_raw_bytes(
     event = b"data: " + body.encode() + b"\n\n"
     script = SseScript(steps=[sse_data(connect_reply())] + [event] * 20)
     async with FakeSseServer([script]) as server:
-        conn = SseConnection(
-            server.url, "test-agent/1", LiveOptions(max_message_bytes=limit), trust_env=False
-        )
+        conn = connection(server, LiveOptions(max_message_bytes=limit))
         tracemalloc.start()
         try:
             await conn.open(Secret(TOKEN), [], 10.0)
@@ -260,3 +386,24 @@ async def test_a_flood_of_nested_events_keeps_memory_bounded_by_the_raw_bytes(
         await conn.close()
     assert isinstance(message, Publication)
     assert peak < 64 * 1024 * 1024
+
+
+async def test_nested_messages_before_the_connect_reply_keep_memory_bounded_by_the_raw_text() -> (
+    None
+):
+    # The decoded form of nested empty lists is ~20x its text: early messages are kept as text.
+    # Peak [observed 2026-11-15]: ~20 MB kept as text (one decode at a time), ~52 MB decoded.
+    size = 256 * 1024
+    head, tail = '{"push":{"channel":"products","pub":{"data":{"a":[', "]}}}}"
+    body = head + ",".join(["[]"] * ((size - len(head) - len(tail) - 10) // 3)) + tail
+    event = b"data: " + body.encode() + b"\n\n"
+    script = SseScript(steps=[*[event] * 8, sse_data(connect_reply())])
+    async with serving([script], early_text_limit=16 * size) as conn:
+        tracemalloc.start()
+        try:
+            await conn.open(Secret(TOKEN), [], 60.0)  # tracemalloc slows decoding a lot
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert isinstance(await conn.read(2.0), Publication)  # decoded one at a time on read
+    assert peak < 32 * 1024 * 1024

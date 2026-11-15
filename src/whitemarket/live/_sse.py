@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections import deque
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Final
@@ -22,12 +23,19 @@ from whitemarket._runtime.retry_after import parse_retry_after
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import DecodeError, TransportError
 from whitemarket.live._connection import (
+    BUFFER_BYTES,
     Incoming,
     ServerClosedError,
     StatusFailureError,
     queue_size,
 )
-from whitemarket.live._envelope import ConnectReply, Disconnect, decode_message
+from whitemarket.live._envelope import (
+    ConnectReply,
+    Disconnect,
+    OtherMessage,
+    Publication,
+    decode_message,
+)
 from whitemarket.live._policy import ConnectInfo, is_personal
 from whitemarket.live._sse_parser import SseParser
 from whitemarket.live.options import LiveOptions
@@ -38,6 +46,10 @@ _HTTP_OK: Final = range(200, 300)
 
 class _Ended:
     """The stream ended or failed."""
+
+
+# A message before the connect reply: the raw text of a data message, a decoded one, or the error.
+_Early = str | Incoming | DecodeError
 
 
 class _RedactCfConnect(logging.Filter):
@@ -70,15 +82,19 @@ class SseConnection:
         options: LiveOptions,
         *,
         trust_env: bool = True,
+        early_text_limit: int = BUFFER_BYTES,
     ) -> None:
         self._url = url
         self._user_agent = user_agent
         self._options = options
         self._trust_env = trust_env
+        self._early_text_limit = early_text_limit
         self._client: httpx.AsyncClient | None = None
         self._response: httpx.Response | None = None
         self._pump: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[str | _Ended] = asyncio.Queue(self._queue_size())
+        # Messages that came before the connect reply; `read` returns them first.
+        self._early: deque[_Early] = deque()
 
     def _queue_size(self) -> int:
         return queue_size(self._options.max_message_bytes)
@@ -131,15 +147,17 @@ class SseConnection:
         self._pump = asyncio.create_task(
             _pump(response, SseParser(self._options.max_message_bytes), queue)
         )
-        return _connect_info(await self._first(queue))
-
-    async def _first(self, queue: "asyncio.Queue[str | _Ended]") -> str:
-        item = await queue.get()
-        if isinstance(item, _Ended):
-            raise TransportError("the live stream ended before the connect reply")
-        return item
+        info, self._early = await _until_connect_reply(queue, self._early_text_limit)
+        return info
 
     async def read(self, seconds: float | None) -> Incoming | None:
+        if self._early:
+            early = self._early.popleft()
+            if isinstance(early, DecodeError):
+                raise early
+            if isinstance(early, str):
+                return decode_message(early)  # the raw text of a data message, decoded once before
+            return early
         try:
             item = await asyncio.wait_for(self._queue.get(), seconds)
         except TimeoutError:
@@ -156,6 +174,7 @@ class SseConnection:
             self._queue.put_nowait(
                 _Ended()
             )  # wakes a reader blocked in `read` (close from another task)
+        self._early = deque()
         pump, self._pump = self._pump, None
         response, self._response = self._response, None
         client, self._client = self._client, None
@@ -188,16 +207,35 @@ async def _send(
         return type(error).__name__
 
 
-def _connect_info(first: str) -> ConnectInfo:
-    try:
-        message = decode_message(first)
-    except DecodeError:
-        raise TransportError("the first live message is not a valid message") from None
-    if isinstance(message, Disconnect):
-        raise ServerClosedError(message.code, message.reason)
-    if not isinstance(message, ConnectReply):
-        raise TransportError("the first live message is not a connect reply")
-    return ConnectInfo.from_reply(message.ping, message.pong, message.ttl, message.expires)
+async def _until_connect_reply(
+    queue: "asyncio.Queue[str | _Ended]", text_limit: int
+) -> tuple[ConnectInfo, deque[_Early]]:
+    """Wait for the connect reply. The server sometimes sends publications before it, more than
+    the queue holds (WHITEMARKET_API.md 11, observed 2026-11-15): every message before the reply
+    is kept and returned with it for `read` to deliver first, in order. Their raw text
+    is bounded by `text_limit` (characters; default the queue's byte budget), their time by the
+    connect timeout."""
+    early: deque[_Early] = deque()
+    early_chars = 0
+    while True:
+        item = await queue.get()
+        if isinstance(item, _Ended):
+            raise TransportError("the live stream ended before the connect reply")
+        try:
+            message: Incoming | DecodeError = decode_message(item)
+        except DecodeError as error:
+            message = error.with_traceback(None)  # `read` raises it as after the reply
+        if isinstance(message, ConnectReply):
+            info = ConnectInfo.from_reply(message.ping, message.pong, message.ttl, message.expires)
+            return info, early
+        if isinstance(message, Disconnect):
+            raise ServerClosedError(message.code, message.reason)
+        early_chars += len(item)
+        if early_chars > text_limit:
+            raise TransportError("the live stream sent too much data before the connect reply")
+        # The decoded form of a message can be far larger than its text (nested empty lists:
+        # ~20x), so the data-bearing kinds are kept as text, as `_ws.py` `_message` does.
+        early.append(item if isinstance(message, Publication | OtherMessage) else message)
 
 
 async def _pump(

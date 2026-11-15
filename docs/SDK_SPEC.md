@@ -580,6 +580,13 @@ live.connect() / live.close()
 - A malformed message of a known type (missing required field, wrong scalar type) becomes `UnknownEvent` plus an
   `onError` call; the stream continues.
 - Envelope decoding handles `message` as string or object; WS frames split on `\n`.
+- SSE connect: the connect reply is not always the first event (WHITEMARKET_API.md 11, observed 2026-11-15:
+  publications arrive before it, more than 64 at a time). Until the connect reply (within the connect timeout), every
+  other message is kept, bounded by its total text size (64 MiB, the live buffer budget; more ends the attempt with a
+  transport error) and not by a message count, and delivered after
+  `onConnected`, in order, exactly as if it had come after the reply (a malformed one goes to `onError`). A
+  disconnect before the reply is handled as a close code; a stream that ends before it is a failed attempt. Messages
+  kept for an attempt that fails are dropped with it. [Proposed by the Python SDK 2026-11-15; PHP to adopt.]
 - Personal channel: the server subscribes `#<personId>` (and `broadcast`) on connect; SDKs do not send a subscribe
   for it and recognise personal channels by the leading `#`. A `105 already subscribed` reply to any subscribe counts
   as success.
