@@ -42,7 +42,10 @@ extras `exports` (`ijson`) and `live` (`websockets`, with an own Centrifugo prot
   `reason`. SSE accepts publications that the server sends before the connect reply and delivers them after
   `on_connected` (before this, such a connect failed with a `TransportError` and was retried).
   `LiveSession.close()` from another thread always wakes a consumer blocked in `poll()` (before this, a
-  `poll()` that ended in the same loop turn as the close could wait forever).
+  `poll()` that ended in the same loop turn as the close could wait forever). An SSE URL that httpx refuses (a
+  control character) fails the connect attempt with a `TransportError` (before this, `httpx.InvalidURL` escaped the
+  session with the token in its traceback). A connect reply `ttl` above one year counts as one year, below 0 as 0
+  (before this, a `ttl` beyond the float range failed every connect).
 - High-level models (`whitemarket.models`): `Page`, `PageRequest`, `Product`, `ProductHistory`, `InventoryItem`, `Sticker`,
   `Deal`, `DealState`, `BuyResult`, `DealStatus` (with `is_in_progress`, `is_exchanged`, `is_successful`, `is_failed`,
   `is_reversed`, `is_final`, `awaiting_trade_protection`), `DealCancelReason`, `DealAction`, `TransactionReason` and the

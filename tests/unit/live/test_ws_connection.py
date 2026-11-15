@@ -30,6 +30,7 @@ from whitemarket.live._connection import (
     StatusFailureError,
 )
 from whitemarket.live._envelope import Disconnect, Ping, Publication, Reply, Unsubscribe
+from whitemarket.live._policy import MAX_TTL_SECONDS
 from whitemarket.live._ws import WsConnection, _end_of
 
 TOKEN = jwt(exp=4_000_000_000, sub="synthetic-user")
@@ -98,8 +99,21 @@ async def test_user_agent_header_is_sent() -> None:
         ({"ttl": None}, (25, True, None)),  # no `expires`: the token does not expire
         ({"ping": 1000}, (300, True, 86400.0)),  # clamped to 300 s
         ({"ping": None, "pong": None}, (25, False, 86400.0)),  # defaults
+        ({"ttl": MAX_TTL_SECONDS}, (25, True, float(MAX_TTL_SECONDS))),
+        ({"ttl": MAX_TTL_SECONDS + 1}, (25, True, float(MAX_TTL_SECONDS))),
+        ({"ttl": 10**400}, (25, True, float(MAX_TTL_SECONDS))),  # beyond a float
+        ({"ttl": -(10**400)}, (25, True, 0.0)),  # below a float: already expired
     ],
-    ids=["ttl-from-reply", "no-expiry", "ping-clamped", "defaults"],
+    ids=[
+        "ttl-from-reply",
+        "no-expiry",
+        "ping-clamped",
+        "defaults",
+        "ttl at the cap -> kept",
+        "ttl over the cap -> the cap",
+        "ttl beyond a float -> the cap",
+        "ttl below a float -> 0",
+    ],
 )
 async def test_the_connect_reply_decides_ping_pong_and_ttl(
     reply: dict[str, Any], expected: tuple[int, bool, float | None]

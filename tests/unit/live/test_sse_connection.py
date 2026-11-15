@@ -21,6 +21,7 @@ from whitemarket.live._connection import (
     queue_size,
 )
 from whitemarket.live._envelope import Ping, Publication
+from whitemarket.live._policy import MAX_TTL_SECONDS
 from whitemarket.live._sse import SseConnection
 from whitemarket.live.options import LiveOptions
 
@@ -95,6 +96,16 @@ async def test_the_request_is_a_get_with_cf_connect_and_no_compression() -> None
     assert request["headers"]["accept-encoding"] == "identity"
     assert request["headers"]["user-agent"] == "test-agent/1"
     assert (info.ping, info.pong, info.ttl) == (25, True, 86400.0)
+
+
+async def test_a_connect_reply_ttl_beyond_a_float_is_capped() -> None:
+    # A faulty server: `float(10**400)` overflows; the connect must still succeed.
+    script = SseScript(steps=[sse_data(connect_reply(ttl=10**400))])
+    async with FakeSseServer([script]) as server:
+        conn = connection(server)
+        info = await conn.open(Secret(TOKEN), [], 5.0)
+        await conn.close()
+    assert info.ttl == float(MAX_TTL_SECONDS)
 
 
 async def test_connect_reply_then_publications_pings_and_split_chunks() -> None:

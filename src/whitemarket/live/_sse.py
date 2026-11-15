@@ -27,6 +27,7 @@ from whitemarket.live._connection import (
     Incoming,
     ServerClosedError,
     StatusFailureError,
+    open_in_time,
     queue_size,
 )
 from whitemarket.live._envelope import (
@@ -102,15 +103,7 @@ class SseConnection:
     async def open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         await self.close()
         _redact_httpx_log()
-        try:
-            async with asyncio.timeout(seconds):
-                return await self._open(token, channels, seconds)
-        except TimeoutError:
-            await self.close()
-            raise TransportError("the live connection sent no connect reply in time") from None
-        except BaseException:
-            await self.close()
-            raise
+        return await open_in_time(seconds, lambda: self._open(token, channels, seconds), self.close)
 
     async def _open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         subs: dict[str, dict[str, str]] = {
@@ -199,11 +192,17 @@ def _connect_url(base: str, token: Secret, subs: dict[str, dict[str, str]]) -> s
 async def _send(
     client: httpx.AsyncClient, url: str, headers: dict[str, str]
 ) -> httpx.Response | str:
-    """The streaming response, or the name of the httpx error class (never the error itself)."""
+    """The streaming response, or the name of the error class (never the error itself).
+
+    Every `Exception` is caught, not only `httpx.HTTPError`: `httpx.InvalidURL` (a URL that
+    `Endpoints` accepts but httpx refuses, such as one with a control character) and
+    `UnicodeEncodeError` (a non-ASCII header) are not `HTTPError`s, and their frames hold `url`,
+    which holds the token. `CancelledError` is a `BaseException` and passes; the engine awaits
+    the connect in its own task, so it never reaches the caller (`_engine.py` `_wait_or_close`)."""
     try:
         request = client.build_request("GET", url, headers=headers)
         return await client.send(request, stream=True, follow_redirects=False, auth=None)
-    except httpx.HTTPError as error:
+    except Exception as error:  # any class: see the docstring
         return type(error).__name__
 
 

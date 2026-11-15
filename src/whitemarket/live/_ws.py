@@ -25,6 +25,7 @@ from whitemarket.live._connection import (
     ServerClosedError,
     SlowConsumerError,
     StatusFailureError,
+    open_in_time,
     queue_size,
 )
 from whitemarket.live._envelope import (
@@ -144,15 +145,7 @@ class WsConnection:
 
     async def open(self, token: Secret, channels: Sequence[str], seconds: float) -> ConnectInfo:
         await self.close()
-        try:
-            async with asyncio.timeout(seconds):
-                return await self._open(token, channels)
-        except TimeoutError:
-            await self.close()
-            raise TransportError("the live connection sent no connect reply in time") from None
-        except BaseException:
-            await self.close()
-            raise
+        return await open_in_time(seconds, lambda: self._open(token, channels), self.close)
 
     async def _open(self, token: Secret, channels: Sequence[str]) -> ConnectInfo:
         result = await _handshake(self._url, self._user_agent, self._proxy, self._max_message_bytes)

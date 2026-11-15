@@ -16,6 +16,9 @@ REFRESH_BELOW: Final = 600.0
 MAX_RETRY_AFTER: Final = 300.0
 DEFAULT_PING_SECONDS: Final = 25
 MAX_PING_SECONDS: Final = 300
+# A connect reply `ttl` above this (a year; the server sends about 86400, WHITEMARKET_API.md 11)
+# is taken as this: any such token outlives the connection.
+MAX_TTL_SECONDS: Final = 365 * 24 * 3600
 IDLE_GRACE_SECONDS: Final = 10
 EPSILON: Final = 1e-6
 SYSTEM_RANDOM: Final = random.SystemRandom().random
@@ -81,7 +84,10 @@ class ConnectInfo:
         seconds = (
             min(ping, MAX_PING_SECONDS) if ping is not None and ping > 0 else DEFAULT_PING_SECONDS
         )
-        return cls(ping=seconds, pong=pong, ttl=float(ttl) if expires and ttl is not None else None)
+        # Clamped to 0..MAX_TTL_SECONDS before `float()`: a server int may not fit a float, and
+        # any `ttl` of 0 or less already means "refresh now" to the engine.
+        left = float(max(0, min(ttl, MAX_TTL_SECONDS))) if expires and ttl is not None else None
+        return cls(ping=seconds, pong=pong, ttl=left)
 
     @property
     def idle_seconds(self) -> float | None:

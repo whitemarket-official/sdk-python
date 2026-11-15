@@ -1,6 +1,7 @@
 """What a session needs from one live connection, and the failures a connection reports."""
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Final, Protocol
 
 from whitemarket._runtime.secret import Secret
@@ -27,6 +28,28 @@ MIN_QUEUE_SIZE: Final = 2
 def queue_size(max_message_bytes: int) -> int:
     """How many messages a connection buffers (WebSocket and SSE share the rule)."""
     return max(MIN_QUEUE_SIZE, min(QUEUE_SIZE, BUFFER_BYTES // max_message_bytes))
+
+
+async def open_in_time(
+    seconds: float,
+    attempt: Callable[[], Awaitable[ConnectInfo]],
+    close: Callable[[], Awaitable[None]],
+) -> ConnectInfo:
+    """Run `attempt` within `seconds`; on any failure `close` before the error leaves.
+
+    The timeout error is raised outside the `except` block: the timeout can fire inside the
+    request, whose frame holds the token (the SSE URL), and a raise inside the block would chain
+    that frame as `__context__` (`from None` only hides it from the printout). SDK_SPEC 8."""
+    try:
+        async with asyncio.timeout(seconds):
+            return await attempt()
+    except TimeoutError:
+        pass  # raised below, outside this block
+    except BaseException:
+        await close()
+        raise
+    await close()
+    raise TransportError("the live connection sent no connect reply in time")
 
 
 Incoming = Publication | Disconnect | Unsubscribe | Reply | Ping | ConnectReply | OtherMessage
