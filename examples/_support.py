@@ -165,13 +165,19 @@ def describe_product_event(event: LiveEvent) -> str:
     return f"other   {type(event).__name__} on {event.channel}"
 
 
+def report_live_problem(error: Exception) -> None:
+    """`on_error` of the live examples: the whole `failure_report` (class, message, GraphQL
+    category), so a reconnect cause can be told apart. SDK error texts hold no credential."""
+    out(f"non-fatal problem: {failure_report(error)}")
+
+
 def print_product_feed(transport: LiveTransport, wanted: int, time_limit: float) -> int:
     """Print `wanted` live product events, then stop; exit code 1 when fewer arrive in `time_limit` s."""
     seen = 0
     deadline = time.monotonic() + time_limit
     with WhiteMarketClient.from_env() as client, client.live(transport) as live:
         live.on_connected(lambda reconnected: out(f"connected (reconnected={reconnected})"))
-        live.on_error(lambda error: out(f"non-fatal problem: {type(error).__name__}"))
+        live.on_error(report_live_problem)
         live.subscribe_products()
         while seen < wanted and time.monotonic() < deadline:
             event = live.poll(5.0)

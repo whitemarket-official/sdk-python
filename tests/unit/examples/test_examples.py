@@ -15,7 +15,12 @@ from support import market_payloads as mp
 from support.clients import ACCESS
 from support.http import data
 from whitemarket import WhiteMarketClient
-from whitemarket.errors import GraphQLError, HttpError, PurchaseOutcomeUnknownError
+from whitemarket.errors import (
+    GraphQLError,
+    HttpError,
+    PurchaseOutcomeUnknownError,
+    TransportError,
+)
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
 # SDK_SPEC 9 plus `buy_product_by_id` (docs/SPEC_SYNC.md item 5).
@@ -199,3 +204,22 @@ def test_failure_report_names_class_status_category_and_path_and_cleans_control_
 
 def test_failure_report_shows_the_http_status() -> None:
     assert "HttpError (HTTP 418): HTTP 418" in load("_support").failure_report(HttpError(418))
+
+
+def test_a_live_problem_is_reported_with_its_message_and_category(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    support = load("_support")
+    limited = GraphQLError.from_payload(
+        [{"message": "Too many requests.", "extensions": {"category": "synthetic.rate_limit"}}]
+    )
+
+    support.report_live_problem(TransportError("the live stream ended before the connect reply"))
+    support.report_live_problem(limited)
+
+    printed = capsys.readouterr().out
+    assert "non-fatal problem: TransportError: the live stream ended before the connect reply" in (
+        printed
+    )
+    assert "non-fatal problem: GraphQLError: Too many requests." in printed
+    assert "- [synthetic.rate_limit] at (no path): Too many requests." in printed
