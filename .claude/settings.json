@@ -233,6 +233,11 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/format.sh",
             "async": true,
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/shared-docs-sync.sh post-edit",
+            "timeout": 10
           }
         ]
       },
@@ -284,6 +289,11 @@
           {
             "type": "command",
             "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/quality-gate.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/shared-docs-sync.sh stop",
             "timeout": 15
           }
         ]

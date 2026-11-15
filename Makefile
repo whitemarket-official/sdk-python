@@ -244,4 +244,5 @@ actionlint: ## Lint GitHub Actions workflows
 .PHONY: hooks-test
 hooks-test: ## Regression tests of the .claude hooks
 	@bash .claude/hooks/hooks-test.sh && bash .claude/hooks/hooks-test-agent-guard.sh \
-		&& bash .claude/hooks/suppress-check-test.sh && bash .claude/hooks/reuse-check-test.sh
+		&& bash .claude/hooks/suppress-check-test.sh && bash .claude/hooks/reuse-check-test.sh \
+		&& bash .claude/hooks/shared-docs-sync-test.sh

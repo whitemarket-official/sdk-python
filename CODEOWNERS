@@ -1,6 +1,7 @@
 # `whitemarket-official` is a (corporate) personal GitHub account, not an organization: it has no teams, so every
 # rule names the account (SDK_SPEC 0). The PR author cannot approve their own PR, so `main` does not require a
 # code-owner review; the human review of the paths below is the owner's check of the diff before the merge.
+# This file is identical in all seven WhiteMarket SDK repositories (.claude/shared-docs.conf).
 
 # Default owners
 *                         @whitemarket-official
@@ -11,7 +12,12 @@
 /.claude/                 @whitemarket-official
 /.mcp.json                @whitemarket-official
 
+# Files shared byte-identical across the seven SDK repositories (.claude/shared-docs.conf)
+/CODEOWNERS               @whitemarket-official
+/docs/SDK_SPEC.md         @whitemarket-official
+/docs/WHITEMARKET_API.md  @whitemarket-official
+
 # CI and release pipelines, the build entry point and dev tools (they run on every contributor's machine and in CI)
-/.github/workflows/       @whitemarket-official
+/.github/                 @whitemarket-official
 /Makefile                 @whitemarket-official
 /tools/                   @whitemarket-official
