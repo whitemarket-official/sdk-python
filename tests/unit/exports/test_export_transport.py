@@ -401,6 +401,51 @@ def test_any_other_redirect_is_a_transport_error_and_nothing_is_sent_there(
     assert location not in str(caught.value)  # server input is not echoed
 
 
+@each_flavor
+def test_a_location_httpx_cannot_parse_is_a_named_protocol_error_retried_like_one(
+    flavor: Flavor, rigs: Any
+) -> None:
+    # PHP parity check (2026-11-15, SDK_SPEC 2 and 8) [observed, httpx 0.28.1]: httpx parses the
+    # Location of a 3xx even with follow_redirects=False and raises RemoteProtocolError (an
+    # httpx.TransportError) for one over its 65536-character URL limit, before the SDK builds a
+    # request of its own. So a server's bad Location is a protocol error of that exchange, retried
+    # under the retry table, reported by class name only, never chained, never echoed.
+    location = "/" + "a" * 70_000
+    rig = rigs(flavor, redirect(location))
+
+    with pytest.raises(TransportError, match=r"\(RemoteProtocolError\)$") as caught:
+        rig.prices()
+
+    assert (len(rig.requests), rig.sleeps) == (3, RETRY_WAITS)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "aaaa" not in str(caught.value)
+
+
+@each_flavor
+def test_a_request_the_library_cannot_build_is_raised_once_by_class_name_only(
+    flavor: Flavor, rigs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # SDK_SPEC 2 (PARITY T6): building fails the same way on every attempt and is not a network
+    # failure. No public option reaches it (URLs and the User-Agent suffix are checked at
+    # construction), so httpx's own `Request` is made to refuse, at the library boundary.
+    rig = rigs(flavor, ok(PRICES_BODY))
+    built: list[str] = []
+
+    def refuse(method: str, url: Any, **kwargs: Any) -> httpx.Request:
+        built.append(str(url))
+        raise httpx.InvalidURL("synthetic SECRET-IN-MESSAGE")
+
+    monkeypatch.setattr(flavor.attr("export_transport", "httpx"), "Request", refuse)
+
+    with pytest.raises(TransportError, match=r"\(InvalidURL\)$") as caught:
+        rig.prices()
+
+    assert (len(built), len(rig.requests), rig.sleeps) == (1, 0, []), "built once, not repeated"
+    assert (caught.value.__cause__, caught.value.__context__) == (None, None)
+    assert "SECRET-IN-MESSAGE" not in str(caught.value)
+
+
 INJECTED_CLIENT_OPTIONS = [
     pytest.param({"follow_redirects": True}, id="client that follows redirects"),
     pytest.param(

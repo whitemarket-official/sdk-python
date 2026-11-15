@@ -241,6 +241,26 @@ def test_the_public_store_classes_are_the_default_stores() -> None:
         pytest.param({"partner_token": "p", "sse_url": "http://x/sse"}, "sse_url", id="sse http"),
         pytest.param({"partner_token": "p", "ws_url": "ws://x/ws"}, "ws_url", id="ws plain"),
         pytest.param(
+            {"partner_token": "p", "base_url": "https://api.example\x85"},
+            "base_url must be printable ASCII",
+            id="base url with U+0085",
+        ),
+        pytest.param(
+            {"partner_token": "p", "sse_url": "https://api.example/sse\ud800"},
+            "sse_url must be printable ASCII",
+            id="sse url with a lone surrogate",
+        ),
+        pytest.param(
+            {"partner_token": "p", "export_base_url": "https://999.999.999.999"},
+            "export_base_url is not a valid URL",
+            id="export url with an IPv4 out of range",
+        ),
+        pytest.param(
+            {"partner_token": "p", "ws_url": "wss://xn--zz/ws"},
+            "ws_url is not a valid URL",
+            id="ws url with a bad A-label",
+        ),
+        pytest.param(
             {"partner_token": "p", "user_agent_suffix": "bad\n"}, "user_agent_suffix", id="suffix"
         ),
         pytest.param(

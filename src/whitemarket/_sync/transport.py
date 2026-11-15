@@ -168,15 +168,14 @@ class GraphQLTransport:
         self, operation_type: OperationType, body: bytes, secrets: Mapping[str, Secret]
     ) -> HttpReply | NoReply:
         client = self._clients.mutation if operation_type == "mutation" else self._clients.query
-        headers = self._request_headers(operation_type, secrets)
         timeouts = self._config.timeouts
         self._log.debug("WhiteMarket API POST %s", redact_url(self._config.graphql_url))
-        request = client.build_request(
-            "POST",
-            self._config.graphql_url,
-            content=body,
-            headers=headers,
-        )
+        # The revealed headers go straight into _build_request: this frame raises TransportError,
+        # and a local holding them would print with it (SDK_SPEC 8).
+        request = self._build_request(client, body, self._request_headers(operation_type, secrets))
+        if isinstance(request, str):
+            # Nothing was sent and the same request would fail again: not a NoReply, never repeated.
+            raise TransportError(f"WhiteMarket API could not build the request ({request})")
         # Whatever fails below is reported by name only and raised AFTER the except blocks: an httpx
         # error holds the request (with its credential header), so it must not become a __context__.
         reply: HttpReply | None = None
@@ -201,6 +200,22 @@ class GraphQLTransport:
         if not sent:
             return NoReply(failure)
         raise TransportError(f"WhiteMarket API could not read the response: {failure}")
+
+    def _build_request(
+        self, client: httpx.Client, body: bytes, headers: Mapping[str, str]
+    ) -> httpx.Request | str:
+        """The request, or the failure by class name (never the error itself).
+
+        Every `Exception` is caught, not only `httpx.HTTPError`: what an injected client adds
+        (a default query parameter or cookie httpx cannot encode) fails here as `InvalidURL`,
+        `UnicodeEncodeError` or `idna.IDNAError`, and this frame holds the credential header
+        (SDK_SPEC 8). The caller raises outside this handler, so nothing is chained."""
+        try:
+            return client.build_request(
+                "POST", self._config.graphql_url, content=body, headers=headers
+            )
+        except Exception as error:  # any class: see the docstring
+            return type(error).__name__
 
     def _read(self, response: httpx.Response, check: Callable[[], None]) -> HttpReply:
         status = response.status_code

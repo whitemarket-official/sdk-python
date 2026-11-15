@@ -12,7 +12,16 @@ import pytest
 
 import whitemarket
 from support.flavors import jwt
-from support.live_servers import FakeCentrifugoServer, FakeSseServer, FakeWsConnection, SseScript
+from support.live_servers import (
+    PRODUCT_CONTENT,
+    FakeCentrifugoServer,
+    FakeSseServer,
+    FakeWsConnection,
+    SseScript,
+    connect_reply,
+    pub_message,
+    sse_data,
+)
 from whitemarket._runtime.secret import Secret
 from whitemarket.errors.base import LiveConnectionError, TransportError, WhiteMarketError
 from whitemarket.live._sse import SseConnection
@@ -40,9 +49,11 @@ class _Tokens:
         return Secret(token)
 
 
-def _chain_text(error: BaseException) -> str:
+def _chain_text(error: BaseException, *, deep: bool = True) -> str:
     """Every frame local of every exception on the chain, as a traceback tool would print it,
-    plus every string reachable from those locals (`Response.request.url` is not in a `repr`)."""
+    plus (`deep`) every string reachable from those locals (`Response.request.url` is not in a
+    `repr`). SDK_SPEC 8 requires only the printed form (owner decision 38); `deep` is stricter
+    and holds for the error paths that never pass a live connection's frames."""
     parts: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = error
@@ -53,13 +64,14 @@ def _chain_text(error: BaseException) -> str:
                 traceback.TracebackException.from_exception(current, capture_locals=True).format()
             )
         )
-        parts.extend(_reachable_strings(current))
+        if deep:
+            parts.extend(_reachable_strings(current))
         tb = current.__traceback__
         while tb is not None:
             sdk_frame = _SDK_DIR in Path(tb.tb_frame.f_code.co_filename).parents
             for value in tb.tb_frame.f_locals.values():
                 parts.append(repr(value))
-                if sdk_frame:  # a test frame holds the fake server, which records the token
+                if deep and sdk_frame:  # a test frame holds the fake server, which records it
                     parts.extend(_reachable_strings(value))
             tb = tb.tb_next
         current = current.__cause__ or current.__context__
@@ -294,3 +306,43 @@ async def test_cancelling_a_ws_connect_keeps_the_token_out_of_the_error() -> Non
         )
         error = await _cancelled_connect(session, tokens)
     assert not _token_part(_chain_text(error))
+
+
+# Owner decision 38: with an SSE connection open, `self` of the SDK frames reaches the response,
+# whose request URL holds the token, so only the printed form is checked on these two paths.
+
+
+async def test_a_malformed_sse_message_passed_to_on_error_prints_no_token() -> None:
+    script = SseScript(steps=[sse_data(connect_reply()), b"data: {not json\n\n"])
+    async with FakeSseServer([script]) as server:
+        session = AsyncLiveSession(
+            tokens=_Tokens(), connection=SseConnection(server.url, "ua", LiveOptions())
+        )
+        errors: list[Exception] = []
+        session.on_error(errors.append)
+        await session.connect()
+        await session.poll(0.5)
+        chains = "\n".join(_chain_text(e, deep=False) for e in errors)
+        await session.close()
+    assert [type(e).__name__ for e in errors] == ["DecodeError"]
+    assert not _token_part(chains)
+
+
+async def test_a_handler_exception_out_of_poll_prints_no_token() -> None:
+    publication = pub_message("market_products_updates", "market_product_added", PRODUCT_CONTENT)
+    script = SseScript(steps=[sse_data(connect_reply()), sse_data(publication)])
+    async with FakeSseServer([script]) as server:
+        session = AsyncLiveSession(
+            tokens=_Tokens(), connection=SseConnection(server.url, "ua", LiveOptions())
+        )
+
+        def fail(event: object) -> None:
+            raise RuntimeError(type(event).__name__)
+
+        session.subscribe_products(fail)
+        await session.connect()
+        with pytest.raises(RuntimeError) as caught:
+            await session.poll(2)
+        chain = _chain_text(caught.value, deep=False)
+        await session.close()
+    assert not _token_part(chain)

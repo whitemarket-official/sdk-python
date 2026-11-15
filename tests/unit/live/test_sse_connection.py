@@ -108,6 +108,25 @@ async def test_a_connect_reply_ttl_beyond_a_float_is_capped() -> None:
     assert info.ttl == float(MAX_TTL_SECONDS)
 
 
+@pytest.mark.parametrize(
+    "ttl",
+    [
+        pytest.param("5", id="ttl as a JSON string of digits"),
+        pytest.param(5.0, id="ttl as a JSON fraction"),
+        pytest.param(True, id="ttl as a JSON boolean"),
+    ],
+)
+async def test_a_connect_reply_ttl_that_is_not_a_json_integer_is_never_a_connect(
+    ttl: Any,
+) -> None:
+    # PHP parity (2026-11-15): a ttl in any other JSON type is a decode error, like any integer
+    # field, never read as a number. The reply then never counts as the connect reply.
+    script = SseScript(steps=[sse_data(connect_reply(ttl=ttl))])
+    async with serving([script]) as conn:
+        with pytest.raises(TransportError, match="no connect reply"):
+            await conn.open(Secret(TOKEN), [], 0.3)
+
+
 async def test_connect_reply_then_publications_pings_and_split_chunks() -> None:
     message = sse_data(pub_message("market_products_updates", "market_product_added", CONTENT))
     script = SseScript(

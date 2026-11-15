@@ -135,17 +135,31 @@ def test_a_non_string_enum_value_is_still_an_error() -> None:
 
 # --- exact numbers ----------------------------------------------------------------------------
 @KINDS
-def test_a_float_scalar_decodes_to_the_exact_decimal_of_the_wire_text(flavor: Flavor) -> None:
+@pytest.mark.parametrize(
+    ("wire", "expected"),
+    [
+        pytest.param("95.130000000000000001", Decimal("95.130000000000000001"), id="many decimals"),
+        # PHP parity (2026-11-15, SDK_SPEC 4): a number beyond the binary float range is held
+        # exactly by Decimal, so it is a value here, never float('inf') and never a decode error.
+        pytest.param("1e400", Decimal("1E+400"), id="beyond the float range -> exact Decimal"),
+        pytest.param("-1e400", Decimal("-1E+400"), id="below the float range -> exact Decimal"),
+        pytest.param("1e-400", Decimal("1E-400"), id="below the float precision -> not zero"),
+    ],
+)
+def test_a_float_scalar_decodes_to_the_exact_decimal_of_the_wire_text(
+    flavor: Flavor, wire: str, expected: Decimal
+) -> None:
     placeholder = "@@FADE@@"
     payload = market_list_payload([csgo_item(fade=placeholder, amount=2**63 + 1)])
-    body = json.dumps({"data": payload}).replace(f'"{placeholder}"', "95.130000000000000001")
+    body = json.dumps({"data": payload}).replace(f'"{placeholder}"', wire)
 
     data = decode(body)["data"]
     result = Harness(flavor, data).call("market_list")
 
     (node,) = edges(result)
-    assert node.item.fade == Decimal("95.130000000000000001")
     assert isinstance(node.item.fade, Decimal)
+    assert node.item.fade.is_finite()
+    assert node.item.fade == expected
     assert node.item.amount == 2**63 + 1, "integers beyond 2^53 stay exact"
 
 

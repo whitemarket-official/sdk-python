@@ -6,6 +6,7 @@ Port of the PHP HttpTransportTest cases. Every test runs for both flavors.
 import gzip
 import logging
 import re
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 
@@ -182,6 +183,25 @@ def test_the_last_network_error_is_a_transport_error_without_the_request(rig: An
     assert "ConnectError" in str(error)
 
 
+@pytest.mark.parametrize("kind", ["query", "mutation"])
+def test_a_request_the_library_cannot_build_is_a_transport_error_that_prints_no_credential(
+    rig: Any, kind: str
+) -> None:
+    # An injected client's default query parameter httpx cannot encode: `build_request` fails
+    # while the credential header is a local of the transport frame (SDK_SPEC 8, printed form).
+    r = rig(data(ok=1), client_options={"params": {"x": "\ud800"}})
+
+    with pytest.raises(TransportError) as caught:
+        r.post(kind)
+
+    error = caught.value
+    printed = _printed(error)  # before the assert: its rewrite holds the literal
+    assert "SECRET-ACCESS-TOKEN" not in printed
+    assert (error.__cause__, error.__context__) == (None, None)
+    assert "UnicodeEncodeError" in str(error)
+    assert (r.script.count, r.sleeps) == (0, []), "nothing sent, not repeated"
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -314,6 +334,24 @@ def test_an_undecodable_body_is_a_transport_error_not_a_retry(rig: Any, response
         r.post()
 
     assert r.script.count == 1
+
+
+@pytest.mark.parametrize("kind", ["query", "mutation"])
+def test_an_unreadable_response_is_a_transport_error_that_prints_no_credential(
+    rig: Any, kind: str
+) -> None:
+    r = rig(reply(200, content=b"nope", headers={"Content-Encoding": "gzip"}))
+
+    with pytest.raises(TransportError, match="could not read the response") as caught:
+        r.post(kind)
+
+    printed = _printed(caught.value)  # before the assert: its rewrite holds the literal
+    assert "SECRET-ACCESS-TOKEN" not in printed
+
+
+def _printed(error: BaseException) -> str:
+    """The error as a traceback tool prints it with stack-frame variables (SDK_SPEC 8)."""
+    return "".join(traceback.TracebackException.from_exception(error, capture_locals=True).format())
 
 
 def test_an_error_body_is_bounded_and_an_unreadable_one_still_maps_the_status(rig: Any) -> None:

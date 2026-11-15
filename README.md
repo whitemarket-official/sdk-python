@@ -328,7 +328,7 @@ credentials.
 |---|---|
 | `partner_token`, `access_token`, `token_provider` | exactly one credential |
 | `token_store` | where the cached access token lives (with `partner_token` only) |
-| `base_url`, `graphql_path`, `export_base_url`, `sse_url`, `ws_url` | endpoint overrides (https, no embedded credentials) |
+| `base_url`, `graphql_path`, `export_base_url`, `sse_url`, `ws_url` | endpoint overrides (https, no embedded credentials, printable ASCII up to 2048 characters, an internationalised host in its `xn--` form; `sse_url` without a query: the SDK appends its own) |
 | `http_client` | an `httpx.Client` (`httpx.AsyncClient` for the async client), see below |
 | `timeouts`, `retry` | `Timeouts`, `RetryPolicy` |
 | `logger` | a `logging.Logger` (default: `logging.getLogger("whitemarket")`) |

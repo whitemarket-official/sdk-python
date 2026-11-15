@@ -129,6 +129,32 @@ async def test_the_connect_reply_decides_ping_pong_and_ttl(
     assert (info.ping, info.pong, info.ttl) == expected  # never derived from the JWT `exp`
 
 
+@pytest.mark.parametrize(
+    "ttl",
+    [
+        pytest.param("5", id="ttl as a JSON string of digits"),
+        pytest.param(5.0, id="ttl as a JSON fraction"),
+        pytest.param(True, id="ttl as a JSON boolean"),
+    ],
+)
+async def test_a_connect_reply_ttl_that_is_not_a_json_integer_is_never_a_connect(
+    ttl: Any,
+) -> None:
+    # PHP parity (2026-11-15): a ttl in any other JSON type is a decode error, like any integer
+    # field, never read as a number; the connection reports it as a TransportError.
+    async def script(c: FakeWsConnection) -> None:
+        await c.accept_connect(ttl=ttl)
+        await c.hold()
+
+    async with FakeCentrifugoServer([script]) as server:
+        conn = connection(server)
+        try:
+            with pytest.raises(TransportError):
+                await conn.open(Secret(jwt(exp=4_000_000_000)), [], 0.3)
+        finally:
+            await conn.close()
+
+
 async def test_string_and_object_messages_and_several_messages_in_one_frame() -> None:
     async def script(c: FakeWsConnection) -> None:
         await c.accept_connect()
