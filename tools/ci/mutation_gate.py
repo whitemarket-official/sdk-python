@@ -3,6 +3,7 @@
     mutation_gate.py gate [--meta-dir mutants] [--min-score 80] [--min-covered 90]
     mutation_gate.py gate --counts DIR --parts 6   # the sum of the part counts, all parts present
     mutation_gate.py names --base origin/main      # mutant-name globs of changed hand-written files
+                                                   # that yield a mutant (needs mutmut installed)
     mutation_gate.py names --part 2 --parts 6      # globs of the second of six parts of all of them
     mutation_gate.py counts --out FILE             # the statuses of this run as JSON, for the gate
 
@@ -20,7 +21,10 @@ that have not run, which a changed-files run leaves behind. Exit codes map to st
     score   = (killed + timeout) / (total - no_tests)   total counts the mutants that ran
     covered = the same ratio; the gate fails below --min-score, --min-covered (90) only warns.
 
-Mirrors the PHP SDK (infection.json5: minMsi 80, minCoveredMsi 90). Stdlib only.
+Mirrors the PHP SDK (infection.json5: minMsi 80, minCoveredMsi 90). Stdlib only, except
+`names --base`, which asks mutmut's own generator whether a changed file yields any mutant:
+mutmut refuses a run whose filter matches no mutant (`Filtered for specific mutants, but nothing
+matches`), so a pull request that changes only, say, `_version.py` must skip the run instead.
 """
 
 import argparse
@@ -123,6 +127,13 @@ def is_mutated(path: str, excluded: Iterable[str]) -> bool:
         and path.endswith(".py")
         and not any(fnmatch.fnmatch(path, pattern) for pattern in excluded)
     )
+
+
+def yields_mutants(path: Path) -> bool:
+    """Whether mutmut 3.8.1 generates at least one mutant for the file (its pragmas honoured)."""
+    from mutmut.mutation.file_mutation import mutate_file_contents  # noqa: PLC0415 - see module doc, #0
+
+    return bool(mutate_file_contents(str(path), path.read_text()).mutant_names)
 
 
 def _glob(path: str) -> str:
@@ -234,7 +245,9 @@ def _positive(text: str) -> int:
 
 
 def _names_changed(base: str) -> int:
-    say("\n".join(mutant_globs(changed_paths(base), excluded_patterns())))
+    excluded = excluded_patterns()
+    paths = [p for p in changed_paths(base) if is_mutated(p, excluded) and yields_mutants(ROOT / p)]
+    say("\n".join(mutant_globs(paths, excluded)))
     return 0
 
 

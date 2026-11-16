@@ -138,7 +138,7 @@ mutation: ## Mutation tests + score gate (mutmut; MUTATE_CHANGED=origin/main: di
 	if [ -n "$(MUTATE_CHANGED)" ] && [ -n "$(MUTATE_PART)$(MUTATION_PARTS)" ]; then echo "mutation: MUTATE_CHANGED or MUTATE_PART, not both" >&2; exit 2; fi; \
 	if [ -n "$(MUTATE_CHANGED)" ]; then \
 		names=$$($(BIN)/python tools/ci/mutation_gate.py names --base "$(MUTATE_CHANGED)"); \
-		if [ -z "$$names" ]; then echo "mutation: no hand-written src/ file changed against $(MUTATE_CHANGED); skipped"; exit 0; fi; \
+		if [ -z "$$names" ]; then echo "mutation: no changed hand-written src/ file against $(MUTATE_CHANGED) yields a mutant; skipped"; exit 0; fi; \
 		rm -rf ./mutants; \
 	elif [ -n "$(MUTATE_PART)$(MUTATION_PARTS)" ]; then \
 		names=$$($(BIN)/python tools/ci/mutation_gate.py names --part "$(MUTATE_PART)" --parts "$(MUTATION_PARTS)"); \
