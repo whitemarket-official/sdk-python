@@ -1,5 +1,6 @@
 """tools/ci/mutation_gate.py: the score formula, the exit code and the changed-files globs."""
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -15,6 +16,12 @@ from ci.mutation_gate import (
 )
 
 KILLED, SURVIVED, NO_TESTS, TIMEOUT = 1, 0, 33, 36
+
+# `names --base` asks mutmut's generator; mutmut is a dev tool, absent from the test-only CI
+# environments (ci.yml `uv sync --extra test ...`); the static, pip and mutation jobs have it.
+needs_mutmut = pytest.mark.skipif(
+    importlib.util.find_spec("mutmut") is None, reason="mutmut is not installed"
+)
 
 
 @pytest.mark.parametrize(
@@ -102,6 +109,7 @@ def test_globs_name_the_changed_hand_written_modules_only() -> None:
     ]
 
 
+@needs_mutmut
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -135,6 +143,7 @@ def run_names_changed(
     return capsys.readouterr().out.split()
 
 
+@needs_mutmut
 def test_names_of_a_change_without_any_mutant_is_empty_so_the_run_is_skipped(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -142,6 +151,7 @@ def test_names_of_a_change_without_any_mutant_is_empty_so_the_run_is_skipped(
     assert run_names_changed(monkeypatch, capsys, ["src/whitemarket/_version.py"]) == []
 
 
+@needs_mutmut
 def test_names_of_a_change_keeps_only_the_files_with_mutants(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
