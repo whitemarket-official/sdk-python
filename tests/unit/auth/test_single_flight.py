@@ -31,15 +31,25 @@ STALE = jwt(exp=int(T0.timestamp()) + 3600, jti="stale")
 class Counting:
     """The server side: counts `auth_token` calls; rejects every token but the newest one."""
 
-    def __init__(self, auth_status: int = 200) -> None:
+    def __init__(self, auth_status: int = 200, hold_auth_for_rejections: int = 0) -> None:
+        """`hold_auth_for_rejections`: `auth_token` answers only after that many API requests
+        were rejected (threads only; it blocks), so every rejected caller overlaps the exchange
+        however the threads are scheduled. Without it a thread whose 401 comes after the exchange
+        finished exchanges by itself, as designed, and the count depends on the runner's speed."""
         self.make = fresh_token()
         self.auth_status = auth_status
         self.auth_calls = 0
         self.newest = ""
         self._lock = threading.Lock()
+        self._hold_for = hold_auth_for_rejections
+        self._rejections = 0
+        self._all_rejected = threading.Event()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if is_auth_request(request):
+            if self._hold_for:
+                assert self._all_rejected.wait(timeout=10), "not every caller was rejected"
+                time.sleep(0.05)  # the rejected callers reach the provider's lock
             with self._lock:
                 self.auth_calls += 1
                 if self.auth_status != 200:
@@ -48,6 +58,10 @@ class Counting:
                 return token_answer(self.newest).build()
         if self.newest and request.headers["authorization"] == f"Bearer {self.newest}":
             return api_ok().build()
+        with self._lock:
+            self._rejections += 1
+            if self._rejections >= self._hold_for:
+                self._all_rejected.set()
         return reply(401, b'{"error":{"code":401}}').build()
 
 
@@ -174,7 +188,7 @@ async def test_async_waiters_behind_a_failed_exchange_share_its_failure(
 
 @pytest.mark.parametrize(("call", "cached"), FAILING)
 def test_threads_behind_a_failed_exchange_share_its_failure(call: Any, cached: bool) -> None:
-    server = Counting(auth_status=500)
+    server = Counting(auth_status=500, hold_auth_for_rejections=CALLERS if cached else 0)
     stack = sync_stack(server, retry=NO_RETRY)
     if cached:
         stack.store.set(Secret(STALE), T0.replace(year=2027))
