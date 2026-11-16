@@ -78,7 +78,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        # TODO(#0): put macOS back (`macos-26`, what macos-latest points to) once GitHub's macOS arm64 capacity
+        # recovers; try a pull request in a few weeks, from 2026-12-01. Disabled on 2026-11-16: four jobs in a row
+        # (macos-15 three times, macos-26 once) were cancelled after 15 min, "The job was not acquired by Runner of
+        # type hosted even after multiple attempts", with GitHub's notice "Due to capacity constraints, jobs
+        # targeting macOS arm64 runners may experience longer queue times".
+        os: [windows-2025]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

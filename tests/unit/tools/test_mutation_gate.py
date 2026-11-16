@@ -1,5 +1,6 @@
 """tools/ci/mutation_gate.py: the score formula, the exit code and the changed-files globs."""
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -15,6 +16,12 @@ from ci.mutation_gate import (
 )
 
 KILLED, SURVIVED, NO_TESTS, TIMEOUT = 1, 0, 33, 36
+
+# `names --base` asks mutmut's generator; mutmut is a dev tool, absent from the test-only CI
+# environments (ci.yml `uv sync --extra test ...`); the static, pip and mutation jobs have it.
+needs_mutmut = pytest.mark.skipif(
+    importlib.util.find_spec("mutmut") is None, reason="mutmut is not installed"
+)
 
 
 @pytest.mark.parametrize(
@@ -100,6 +107,57 @@ def test_globs_name_the_changed_hand_written_modules_only() -> None:
         "whitemarket.live._ws.*",
         "whitemarket.retry.*",
     ]
+
+
+@needs_mutmut
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param('__version__ = "0.1.0"\n', False, id="a constant only"),
+        pytest.param(
+            '"""Docstring."""\n\nfrom x import y\n\n__all__ = ["y"]\n', False, id="re-exports"
+        ),
+        pytest.param("def add(a, b):\n    return a + b\n", True, id="a function with an operator"),
+        pytest.param(
+            # Test data, not a suppression: the source mutmut's generator reads, #0
+            "def add(a, b):\n    return a + b  # pragma: no mutate\n",
+            False,
+            id="no-mutate pragma",
+        ),
+    ],
+)
+def test_yields_mutants_asks_mutmuts_own_generator(
+    tmp_path: Path, source: str, *, expected: bool
+) -> None:
+    module = tmp_path / "m.py"
+    module.write_text(source)
+
+    assert gate_module.yields_mutants(module) is expected
+
+
+def run_names_changed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], changed: list[str]
+) -> list[str]:
+    monkeypatch.setattr(gate_module, "changed_paths", lambda _base: changed)
+    assert gate_module.main(["names", "--base", "origin/main"]) == 0
+    return capsys.readouterr().out.split()
+
+
+@needs_mutmut
+def test_names_of_a_change_without_any_mutant_is_empty_so_the_run_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A version bump: mutmut refuses a filter that matches no mutant, so no glob may name it.
+    assert run_names_changed(monkeypatch, capsys, ["src/whitemarket/_version.py"]) == []
+
+
+@needs_mutmut
+def test_names_of_a_change_keeps_only_the_files_with_mutants(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changed = ["src/whitemarket/_version.py", "src/whitemarket/retry.py"]
+
+    assert run_names_changed(monkeypatch, capsys, changed) == ["whitemarket.retry.*"]
 
 
 SIZES = {"a.py": 5, "b.py": 4, "c.py": 3, "d.py": 3, "e.py": 1}

@@ -4,8 +4,8 @@
 [![PyPI](https://img.shields.io/pypi/v/whitemarket-sdk.svg)](https://pypi.org/project/whitemarket-sdk/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Status: `0.1.0` is not released yet. The public API may change until `1.0.0`; while the version is `0.x`, a minor
-> release may contain breaking changes, always listed under "Breaking" in the [changelog](CHANGELOG.md).
+> Status: `0.x`. The public API may change until `1.0.0`; while the version is `0.x`, a minor release may contain
+> breaking changes, always listed under "Breaking" in the [changelog](CHANGELOG.md).
 
 Official Python SDK for the [WhiteMarket](https://white.market) partner API (CS2 skins marketplace).
 
