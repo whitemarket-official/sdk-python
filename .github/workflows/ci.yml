@@ -78,7 +78,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        # macos-26 (arm64, what macos-latest points to): on 2026-11-16 three macos-15 jobs in a row were
+        # cancelled after 15 min, "not acquired by Runner of type hosted even after multiple attempts".
+        os: [windows-2025, macos-26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
