@@ -41,7 +41,7 @@ Run `make help` for all targets. Noisy targets print only errors and a summary; 
 | types (`mypy --strict` and pyright strict on `src/` and `examples/`) | `make types` |
 | unit tests, one subset | `make test` / `make test K=expr` |
 | coverage gate (85 %) | `make coverage` |
-| mutation tests + score gate (80 %; CI: changed files on pull requests, everything on main) | `make mutation` (`MUTATE_CHANGED=origin/main` for the diff run) |
+| mutation tests + score gate (80 %; CI: changed files on pull requests, everything on main in 6 parallel parts) | `make mutation` (`MUTATE_CHANGED=origin/main` for the diff run; `MUTATE_PART=1 MUTATION_PARTS=20` runs one part of 20 and writes its counts, `make mutation-gate MUTATION_PARTS=20` gates the sum of all 20) |
 | dependency audit (the locked sets) | `make audit` |
 | re-lock after a dependency change / verify the lock | `make lock` / `make lock-check` |
 | build sdist and wheel, `twine check` | `make build` |

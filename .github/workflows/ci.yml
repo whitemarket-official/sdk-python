@@ -143,11 +143,18 @@ jobs:
           retention-days: 7
 
   # Mirrors the PHP SDK job: a pull request mutates only the hand-written files it changed (tools/ci/mutation_gate.py
-  # lists them); push to main and manual runs mutate everything (about 35 min). The gate fails below 80 %.
+  # lists them) and gates in that one job. Push to main and manual runs mutate everything, split into 6 parts run at
+  # the same time (one job ran over 60 min on 2026-11-15); each part uploads its counts and `mutation-gate` gates their
+  # sum. The gate fails below 80 %.
   mutation:
-    name: Mutation tests (mutmut)
+    name: Mutation tests (mutmut, ${{ github.event_name == 'pull_request' && 'changed files' || format('part {0} of 6', matrix.part) }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The parts 1..N of a full run; N is MUTATION_PARTS below and in mutation-gate (keep the three in step).
+        part: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[1, 2, 3, 4, 5, 6]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,13 +170,43 @@ jobs:
         env:
           # Pull requests target main; a fixed base keeps branch names out of the command line.
           MUTATE_CHANGED: ${{ github.event_name == 'pull_request' && 'origin/main' || '' }}
+          MUTATE_PART: ${{ github.event_name != 'pull_request' && matrix.part || '' }}
+          MUTATION_PARTS: ${{ github.event_name != 'pull_request' && '6' || '' }}
         run: make mutation VERBOSE=1
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-counts-${{ matrix.part }}
+          path: var/mutation-counts/
+          if-no-files-found: error
+          retention-days: 7
+
+  mutation-gate:
+    name: Mutation score gate
+    needs: [mutation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'pull_request'
+        run: echo "pull request - the mutation job gated its changed files itself"
+      - if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mutation-counts-*
+          path: var/mutation-counts/
+          merge-multiple: true
+      - if: github.event_name != 'pull_request'
+        run: make mutation-gate MUTATION_PARTS=6
 
   # Single required status check for the branch ruleset: green only when every job above is green.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [static, tests, tests-os, pip-compat, secrets, mutation, build]
+    needs: [static, tests, tests-os, pip-compat, secrets, mutation, mutation-gate, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

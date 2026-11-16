@@ -1,7 +1,15 @@
 """Mutation score gate over mutmut's results, and the changed-files selection for pull requests.
 
     mutation_gate.py gate [--meta-dir mutants] [--min-score 80] [--min-covered 90]
-    mutation_gate.py names --base origin/main   # mutant-name globs of changed hand-written files
+    mutation_gate.py gate --counts DIR --parts 6   # the sum of the part counts, all parts present
+    mutation_gate.py names --base origin/main      # mutant-name globs of changed hand-written files
+    mutation_gate.py names --part 2 --parts 6      # globs of the second of six parts of all of them
+    mutation_gate.py counts --out FILE             # the statuses of this run as JSON, for the gate
+
+A full run is split into parts (CI: one job each, at the same time; locally: one small part of
+many, e.g. `--part 1 --parts 20`, for a quick look): every hand-written
+file goes to exactly one part, the parts balanced by line count (largest file first into the
+lightest part), so the union of the parts is the full run and the summed counts give its score.
 
 `gate` reads the `*.meta` files mutmut 3.8.1 writes under `mutants/` (`exit_code_by_key`, the data
 `mutmut export-cicd-stats` aggregates). That export is not used: its `total` counts mutants
@@ -105,14 +113,60 @@ def gate(counts: Mapping[str, int], min_score: float, min_covered: float) -> int
 
 def mutant_globs(paths: Iterable[str], excluded: Iterable[str]) -> list[str]:
     """mutmut mutant-name globs (`whitemarket.live._ws.*`) of hand-written `src/` Python files."""
-    globs: list[str] = []
-    for path in sorted(set(paths)):
-        if not (path.startswith("src/") and path.endswith(".py")):
-            continue
-        if any(fnmatch.fnmatch(path, pattern) for pattern in excluded):
-            continue
-        globs.append(path.removeprefix("src/").removesuffix(".py").replace("/", ".") + ".*")
-    return globs
+    return [_glob(path) for path in sorted(set(paths)) if is_mutated(path, excluded)]
+
+
+def is_mutated(path: str, excluded: Iterable[str]) -> bool:
+    """A hand-written `src/` Python file: not matched by mutmut's `do_not_mutate`."""
+    return (
+        path.startswith("src/")
+        and path.endswith(".py")
+        and not any(fnmatch.fnmatch(path, pattern) for pattern in excluded)
+    )
+
+
+def _glob(path: str) -> str:
+    return path.removeprefix("src/").removesuffix(".py").replace("/", ".") + ".*"
+
+
+def split_into_parts(
+    paths: Iterable[str], sizes: Mapping[str, int], n_parts: int
+) -> list[list[str]]:
+    """`n_parts` parts, each sorted: largest file first into the lightest part (ties: by path,
+    lowest part), so every path lands in exactly one part whatever the input order."""
+    loads = [0] * n_parts
+    parts: list[list[str]] = [[] for _ in range(n_parts)]
+    for path in sorted(set(paths), key=lambda p: (-sizes[p], p)):
+        lightest = min(range(n_parts), key=lambda i: (loads[i], i))
+        loads[lightest] += sizes[path]
+        parts[lightest].append(path)
+    return [sorted(part) for part in parts]
+
+
+def src_python_paths() -> list[str]:
+    """Every Python file under `src/`, as repository-relative POSIX paths."""
+    return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.py"))
+
+
+def line_counts(paths: Iterable[str]) -> dict[str, int]:
+    return {path: len((ROOT / path).read_bytes().splitlines()) for path in paths}
+
+
+def save_counts(counts: Mapping[str, int], out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(dict(sorted(counts.items()))) + "\n")
+
+
+def sum_part_counts(counts_dir: Path, n_parts: int) -> Counter[str]:
+    """The sum of the `*.json` counts in `counts_dir`; exactly `n_parts` files, so a part that
+    wrote nothing fails the gate instead of passing it."""
+    files = sorted(counts_dir.glob("*.json"))
+    if len(files) != n_parts:
+        raise SystemExit(f"mutation: {len(files)} part counts in {counts_dir}, expected {n_parts}")
+    total: Counter[str] = Counter()
+    for file in files:
+        total.update({str(k): int(v) for k, v in json.loads(file.read_text()).items()})
+    return total
 
 
 def changed_paths(base: str) -> list[str]:
@@ -143,14 +197,57 @@ def main(argv: list[str]) -> int:
     gate_parser.add_argument("--meta-dir", type=Path, default=Path("mutants"))
     gate_parser.add_argument("--min-score", type=float, default=80.0)
     gate_parser.add_argument("--min-covered", type=float, default=90.0)
+    gate_parser.add_argument("--counts", type=Path, help="a directory of `counts` outputs")
+    gate_parser.add_argument("--parts", type=_positive, help="how many parts --counts holds")
     names_parser = sub.add_parser("names")
-    names_parser.add_argument("--base", required=True)
+    names_parser.add_argument("--base")
+    names_parser.add_argument("--part", type=_positive, help="which part (1 .. --parts)")
+    names_parser.add_argument("--parts", type=_positive, help="how many parts in all")
+    counts_parser = sub.add_parser("counts")
+    counts_parser.add_argument("--meta-dir", type=Path, default=Path("mutants"))
+    counts_parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "names":
-        say("\n".join(mutant_globs(changed_paths(args.base), excluded_patterns())))
+        if args.base is not None and args.part is None and args.parts is None:
+            return _names_changed(args.base)
+        if args.base is None and args.part is not None and args.parts is not None:
+            if args.part > args.parts:
+                parser.error(f"--part {args.part} is over --parts {args.parts}")
+            return _names_of_part(args.part, args.parts)
+        parser.error("names takes --base, or --part with --parts")
+    if args.command == "counts":
+        save_counts(count_statuses(load_exit_codes(args.meta_dir)), args.out)
         return 0
-    counts = count_statuses(load_exit_codes(args.meta_dir))
+    if (args.counts is None) != (args.parts is None):
+        parser.error("--counts and --parts go together")
+    if args.counts is not None:
+        counts = sum_part_counts(args.counts, args.parts)
+    else:
+        counts = count_statuses(load_exit_codes(args.meta_dir))
     return gate(counts, args.min_score, args.min_covered)
+
+
+def _positive(text: str) -> int:
+    if not (text.isascii() and text.isdigit() and int(text) >= 1):
+        raise argparse.ArgumentTypeError(f"a whole number from 1, not {text!r}")
+    return int(text)
+
+
+def _names_changed(base: str) -> int:
+    say("\n".join(mutant_globs(changed_paths(base), excluded_patterns())))
+    return 0
+
+
+def _names_of_part(part: int, n_parts: int) -> int:
+    excluded = excluded_patterns()
+    paths = [p for p in src_python_paths() if is_mutated(p, excluded)]
+    chosen = split_into_parts(paths, line_counts(paths), n_parts)[part - 1]
+    if not chosen:
+        raise SystemExit(
+            f"mutation: part {part} of {n_parts} holds no file (more parts than files)"
+        )
+    say("\n".join(mutant_globs(chosen, excluded)))
+    return 0
 
 
 if __name__ == "__main__":

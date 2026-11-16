@@ -122,20 +122,39 @@ coverage: ## Unit tests with the coverage gate (fail_under in pyproject.toml, ge
 # Empty: mutate everything. A git ref (origin/main): only the hand-written src/whitemarket files changed since the
 # merge base with it (pull requests); mutants of an earlier run are discarded so the gate sees this run only.
 MUTATE_CHANGED ?=
+# A part of the full run: MUTATE_PART=I of MUTATION_PARTS=N (files split by line count, each in exactly one part).
+# A part writes its counts to $(MUTATION_COUNTS_DIR)/part-I.json and prints its own score without failing on it (one
+# part's score is not the run's); `make mutation-gate` gates the sum of all N. Locally, e.g. `make mutation MUTATE_PART=1 MUTATION_PARTS=20` for a quick look.
+MUTATE_PART ?=
+MUTATION_PARTS ?=
+MUTATION_COUNTS_DIR ?= var/mutation-counts
 
 .PHONY: mutation
-mutation: ## Mutation tests + score gate (mutmut, config in pyproject.toml; MUTATE_CHANGED=origin/main: diff only)
+mutation: ## Mutation tests + score gate (mutmut; MUTATE_CHANGED=origin/main: diff only; MUTATE_PART=I MUTATION_PARTS=N: one part)
 # mutmut forks the pytest process; on macOS urllib's system proxy lookup (SystemConfiguration, reached through
 # httpx.Client()) segfaults in a forked child. A non-empty proxy environment makes urllib skip that lookup.
 # The gate (tools/ci/mutation_gate.py) fails below 80 %: (killed + timeout) / (run - no_tests), as minMsi in the PHP SDK.
 	@set -e; names=""; \
+	if [ -n "$(MUTATE_CHANGED)" ] && [ -n "$(MUTATE_PART)$(MUTATION_PARTS)" ]; then echo "mutation: MUTATE_CHANGED or MUTATE_PART, not both" >&2; exit 2; fi; \
 	if [ -n "$(MUTATE_CHANGED)" ]; then \
 		names=$$($(BIN)/python tools/ci/mutation_gate.py names --base "$(MUTATE_CHANGED)"); \
 		if [ -z "$$names" ]; then echo "mutation: no hand-written src/ file changed against $(MUTATE_CHANGED); skipped"; exit 0; fi; \
 		rm -rf ./mutants; \
+	elif [ -n "$(MUTATE_PART)$(MUTATION_PARTS)" ]; then \
+		names=$$($(BIN)/python tools/ci/mutation_gate.py names --part "$(MUTATE_PART)" --parts "$(MUTATION_PARTS)"); \
+		rm -rf ./mutants; \
 	fi; \
 	NO_PROXY=127.0.0.1,localhost $(QC) mutation $(BIN)/mutmut run $$names; \
-	$(BIN)/python tools/ci/mutation_gate.py gate
+	if [ -n "$(MUTATE_PART)" ]; then \
+		$(BIN)/python tools/ci/mutation_gate.py counts --out "$(MUTATION_COUNTS_DIR)/part-$(MUTATE_PART).json"; \
+		$(BIN)/python tools/ci/mutation_gate.py gate --min-score 0; \
+	else \
+		$(BIN)/python tools/ci/mutation_gate.py gate; \
+	fi
+
+.PHONY: mutation-gate
+mutation-gate: ## Score gate over the summed counts of the MUTATION_PARTS parts in MUTATION_COUNTS_DIR
+	@python3 tools/ci/mutation_gate.py gate --counts "$(MUTATION_COUNTS_DIR)" --parts "$(MUTATION_PARTS)"
 
 .PHONY: audit
 audit: ## Known vulnerabilities in the locked dependencies (requirements-dev.txt and requirements-codegen.txt)
