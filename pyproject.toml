@@ -83,6 +83,10 @@ Changelog = "https://github.com/whitemarket-official/sdk-python/blob/main/CHANGE
 # The `codegen` extra (ruff<0.16 through ariadne-codegen) and the `dev` extra (ruff 0.17) cannot share an environment:
 # uv resolves them as separate forks of uv.lock, and an environment is synced with one of them (`make install`).
 conflicts = [[{ extra = "codegen" }, { extra = "dev" }]]
+# The version is dynamic (read from `_version.py` by hatch): without this key `make install` keeps the editable
+# install's old version metadata after a version bump (uv rebuilds a local project only when a cache key changes;
+# https://docs.astral.sh/uv/concepts/cache/). Setting cache-keys replaces the default, so pyproject.toml stays listed.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/whitemarket/_version.py" }]
 
 # --- build -------------------------------------------------------------------
 
