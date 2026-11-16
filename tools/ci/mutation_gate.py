@@ -8,8 +8,12 @@
 
 A full run is split into parts (CI: one job each, at the same time; locally: one small part of
 many, e.g. `--part 1 --parts 20`, for a quick look): every hand-written
-file goes to exactly one part, the parts balanced by line count (largest file first into the
-lightest part), so the union of the parts is the full run and the summed counts give its score.
+file goes to exactly one part, the parts balanced by the number of mutants mutmut generates per
+file (largest file first into the lightest part; line counts left parts from 1291 to 2412 mutants
+in the CI run 43838380124), so the union of the parts is the full run and the summed counts give
+its score.
+
+Stdlib only, except `names --part`: counting mutants imports mutmut (the dev environment).
 
 `gate` reads the `*.meta` files mutmut 3.8.1 writes under `mutants/` (`exit_code_by_key`, the data
 `mutmut export-cicd-stats` aggregates). That export is not used: its `total` counts mutants
@@ -20,11 +24,12 @@ that have not run, which a changed-files run leaves behind. Exit codes map to st
     score   = (killed + timeout) / (total - no_tests)   total counts the mutants that ran
     covered = the same ratio; the gate fails below --min-score, --min-covered (90) only warns.
 
-Mirrors the PHP SDK (infection.json5: minMsi 80, minCoveredMsi 90). Stdlib only.
+Mirrors the PHP SDK (infection.json5: minMsi 80, minCoveredMsi 90).
 """
 
 import argparse
 import fnmatch
+import functools
 import json
 import shutil
 import subprocess
@@ -148,8 +153,23 @@ def src_python_paths() -> list[str]:
     return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.py"))
 
 
-def line_counts(paths: Iterable[str]) -> dict[str, int]:
-    return {path: len((ROOT / path).read_bytes().splitlines()) for path in paths}
+def mutants_in(source: str, filename: str = "<source>") -> int:
+    """How many mutants mutmut generates for `source`, by mutmut's own generator, so the count
+    is exact (coverage-excluded lines aside). The one part of this tool that is not stdlib: it
+    needs the dev environment, and `mutate_file_contents` is mutmut 3.8.1's internal API."""
+    # PLC0415: the `gate` job runs this file with a bare python3, without mutmut installed, see #0
+    from mutmut.mutation.file_mutation import mutate_file_contents  # noqa: PLC0415
+
+    return len(mutate_file_contents(filename, source).mutant_names)
+
+
+@functools.cache
+def _mutants_in_file(path: str) -> int:
+    return mutants_in((ROOT / path).read_text(encoding="utf-8"), path)
+
+
+def mutant_counts(paths: Iterable[str]) -> dict[str, int]:
+    return {path: _mutants_in_file(path) for path in paths}
 
 
 def save_counts(counts: Mapping[str, int], out: Path) -> None:
@@ -241,7 +261,7 @@ def _names_changed(base: str) -> int:
 def _names_of_part(part: int, n_parts: int) -> int:
     excluded = excluded_patterns()
     paths = [p for p in src_python_paths() if is_mutated(p, excluded)]
-    chosen = split_into_parts(paths, line_counts(paths), n_parts)[part - 1]
+    chosen = split_into_parts(paths, mutant_counts(paths), n_parts)[part - 1]
     if not chosen:
         raise SystemExit(
             f"mutation: part {part} of {n_parts} holds no file (more parts than files)"
