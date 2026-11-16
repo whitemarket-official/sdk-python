@@ -6,7 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the version is `0.x`, a minor release (`0.2.0`) may contain breaking changes; they are always listed under
 "Breaking".
 
-## [0.1.0] - Unreleased
+## [Unreleased]
+
+## [0.1.0] - 2026-11-16
 
 First release of the Python SDK for the WhiteMarket partner API. Requires Python 3.11 or newer (CPython 3.11 to 3.15);
 extras `exports` (`ijson`) and `live` (`websockets`, with an own Centrifugo protocol client).
