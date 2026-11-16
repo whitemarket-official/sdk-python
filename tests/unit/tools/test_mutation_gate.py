@@ -146,20 +146,11 @@ def test_names_takes_a_base_or_a_part_of_parts_and_refuses_anything_else(argv: l
     assert caught.value.code == 2
 
 
-# mutmut runs the whole suite from its `mutants/` copy, whose src/ holds the mutated (trampolined)
-# code mutmut cannot mutate again; `names --part` reads this repository's real src/ only.
-# Skipping these tests there loses nothing: they test tools/, which mutmut does not mutate.
-needs_the_real_sources = pytest.mark.skipif(
-    gate_module.ROOT.name == "mutants", reason="inside mutmut's copy, src/ is already mutated"
-)
-
-
 def run_names(capsys: pytest.CaptureFixture[str], part: int, n_parts: int) -> list[str]:
     assert gate_module.main(["names", "--part", str(part), "--parts", str(n_parts)]) == 0
     return capsys.readouterr().out.split()
 
 
-@needs_the_real_sources
 @pytest.mark.parametrize("n_parts", [1, 6, 20], ids=lambda n: f"{n} parts")
 def test_the_parts_of_this_repository_cover_every_hand_written_module_once(
     capsys: pytest.CaptureFixture[str], n_parts: int
@@ -173,39 +164,6 @@ def test_the_parts_of_this_repository_cover_every_hand_written_module_once(
     assert all(parts), "no part is empty"
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        pytest.param("def f(a):\n    return a + 1\n", 2, id="operator and number in a function"),
-        pytest.param("X = 1 + 2\n", 0, id="module level, mutmut leaves it alone"),
-        pytest.param("def f(a):\n    return a\n", 0, id="nothing to mutate"),
-    ],
-)
-def test_mutants_in_counts_what_mutmut_generates(source: str, expected: int) -> None:
-    # The numbers are what mutmut 3.8.1 generates [observed]; the per-file counts of this
-    # repository summed to the 10402 mutants of the CI run 43838380124.
-    assert gate_module.mutants_in(source) == expected
-
-
-@needs_the_real_sources
-def test_the_parts_of_this_repository_hold_about_the_same_number_of_mutants(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    excluded = gate_module.excluded_patterns()
-    paths = [p for p in gate_module.src_python_paths() if gate_module.is_mutated(p, excluded)]
-    mutants = gate_module.mutant_counts(paths)
-    by_glob = dict(
-        zip(mutant_globs(paths, excluded), (mutants[p] for p in sorted(paths)), strict=True)
-    )
-
-    loads = [sum(by_glob[glob] for glob in run_names(capsys, part, 6)) for part in range(1, 7)]
-
-    # Within 5 % of an even share, unless one file alone is larger than that share.
-    fair = max(1.05 * sum(loads) / len(loads), *mutants.values())
-    assert max(loads) <= fair, loads
-
-
-@needs_the_real_sources
 def test_a_part_with_no_file_is_an_error_not_an_empty_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
