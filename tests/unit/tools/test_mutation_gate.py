@@ -135,9 +135,26 @@ def test_yields_mutants_asks_mutmuts_own_generator(
     assert gate_module.yields_mutants(module) is expected
 
 
+# A repository of its own: under `make mutation` the tests run inside mutmut's `mutants/` copy,
+# where the files of this repository's `src/` are already mutated and cannot be mutated again.
+SYNTHETIC_REPO = {
+    "pyproject.toml": '[tool.mutmut]\ndo_not_mutate = ["src/pkg/_generated/*"]\n',
+    "src/pkg/_version.py": '__version__ = "0.1.0"\n',
+    "src/pkg/calc.py": "def add(a, b):\n    return a + b\n",
+    "src/pkg/_generated/gen.py": "def sub(a, b):\n    return a - b\n",
+}
+
+
 def run_names_changed(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], changed: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    changed: list[str],
 ) -> list[str]:
+    for name, text in SYNTHETIC_REPO.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    monkeypatch.setattr(gate_module, "ROOT", tmp_path)
     monkeypatch.setattr(gate_module, "changed_paths", lambda _base: changed)
     assert gate_module.main(["names", "--base", "origin/main"]) == 0
     return capsys.readouterr().out.split()
@@ -145,19 +162,19 @@ def run_names_changed(
 
 @needs_mutmut
 def test_names_of_a_change_without_any_mutant_is_empty_so_the_run_is_skipped(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     # A version bump: mutmut refuses a filter that matches no mutant, so no glob may name it.
-    assert run_names_changed(monkeypatch, capsys, ["src/whitemarket/_version.py"]) == []
+    assert run_names_changed(monkeypatch, capsys, tmp_path, ["src/pkg/_version.py"]) == []
 
 
 @needs_mutmut
-def test_names_of_a_change_keeps_only_the_files_with_mutants(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_names_of_a_change_keeps_only_the_hand_written_files_with_mutants(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    changed = ["src/whitemarket/_version.py", "src/whitemarket/retry.py"]
+    changed = ["src/pkg/_version.py", "src/pkg/calc.py", "src/pkg/_generated/gen.py"]
 
-    assert run_names_changed(monkeypatch, capsys, changed) == ["whitemarket.retry.*"]
+    assert run_names_changed(monkeypatch, capsys, tmp_path, changed) == ["pkg.calc.*"]
 
 
 SIZES = {"a.py": 5, "b.py": 4, "c.py": 3, "d.py": 3, "e.py": 1}
