@@ -218,6 +218,26 @@ def test_the_store_clear_and_get(flavor: Flavor) -> None:
     assert flavor.run(store.get()) is None
 
 
+def test_a_store_and_the_token_it_holds_never_print_the_token(flavor: Flavor) -> None:
+    value = "synthetic-stored-access-token-91c2"
+    store = flavor.cls("tokens", "InMemoryTokenStore")()
+    flavor.run(store.set(Secret(value), T0))
+    stored = flavor.run(store.get())
+
+    dumps = {
+        "repr(store)": repr(store),
+        "str(store)": str(store),
+        "vars(store)": repr(vars(store)),
+        "repr(stored)": repr(stored),
+        "str(stored)": str(stored),
+        "stored._asdict()": repr(stored._asdict()),
+        "f-string": f"{stored} {stored!r}",
+    }
+
+    assert stored.token.reveal() == value
+    assert [name for name, text in dumps.items() if value in text] == []
+
+
 def test_a_rejected_partner_token_is_not_replayed(flavor: Flavor, stacks: list[Stack]) -> None:
     stack = build(stacks, flavor, Script(reply(401, b'{"error":{"code":401}}')))
 

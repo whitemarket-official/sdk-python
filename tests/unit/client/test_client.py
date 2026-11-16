@@ -1,8 +1,11 @@
 """Client configuration, auth API and the generated layer (SDK_SPEC 2, 3.1)."""
 
 import asyncio
+import dataclasses
 import inspect
 import math
+import pickle
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 
@@ -364,6 +367,76 @@ def test_there_is_no_tls_switch_and_secrets_do_not_show_in_a_dump(
     m = make(partner_token=PARTNER)
     dump = repr(vars(m.client)) + repr(m.client) + repr(vars(m.client.auth))
     assert PARTNER not in dump
+
+
+def _reachable_sdk_objects(root: object) -> list[object]:
+    """Every SDK object reachable from `root` through instance attributes and slots."""
+    seen: set[int] = set()
+    found: list[object] = []
+    todo = [root]
+    while todo:
+        obj = todo.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, list | tuple | set | frozenset):
+            todo.extend(obj)
+            continue
+        if isinstance(obj, dict):
+            todo.extend(obj.values())
+            continue
+        if isinstance(obj, type) or not type(obj).__module__.startswith("whitemarket"):
+            continue
+        found.append(obj)
+        todo.extend(vars(obj).values() if hasattr(obj, "__dict__") else ())
+        for klass in type(obj).__mro__:
+            slots = getattr(klass, "__slots__", ())
+            for name in (slots,) if isinstance(slots, str) else slots:
+                if hasattr(obj, name):
+                    todo.append(getattr(obj, name))
+    return found
+
+
+def _with_exchanged_token(make: Any) -> tuple[ClientRig, str]:
+    token = fresh_token(clock=wall_clock)()
+    m = make(token_answer(token), partner_token=PARTNER)
+    m.call(m.client.auth.access_token())
+    return m, token
+
+
+def test_no_configuration_dataclass_of_a_client_dumps_a_credential(make: Any) -> None:
+    m, token = _with_exchanged_token(make)
+
+    # A configuration dataclass holds plain values; `HttpClients` holds the httpx clients
+    # themselves (not a configuration, and `asdict` cannot deep-copy their locks).
+    configs = [
+        obj
+        for obj in _reachable_sdk_objects(m.client)
+        if dataclasses.is_dataclass(obj)
+        and not isinstance(obj, type)
+        and not any(
+            isinstance(getattr(obj, f.name), httpx.Client | httpx.AsyncClient)
+            for f in dataclasses.fields(obj)
+        )
+    ]
+    dumps = {type(config).__name__: repr(dataclasses.asdict(config)) for config in configs}
+
+    assert {"TransportConfig", "Endpoints", "ExportOptions"} <= dumps.keys(), dumps.keys()
+    assert [name for name, text in dumps.items() if PARTNER in text or token in text] == []
+
+
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_pickling_a_client_is_refused_and_the_error_names_no_credential(
+    make: Any, protocol: int
+) -> None:
+    m, token = _with_exchanged_token(make)
+
+    with pytest.raises(TypeError) as caught:
+        pickle.dumps(m.client, protocol)
+
+    printed = "".join(traceback.format_exception(caught.value))
+    assert PARTNER not in printed
+    assert token not in printed
 
 
 # ---- from_env ------------------------------------------------------------------------------------
