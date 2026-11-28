@@ -37,347 +37,375 @@ from .enums import (
 
 
 class DateTimeRangeInput(BaseModel):
-    """DateTime range"""
+    """Time span to filter by, either end may be left out"""
 
     from_: Optional[AwareDatetime] = Field(serialization_alias="from", default=None)
-    "Point from @example 2023-11-29T23:33:27+0000"
+    "Earliest moment to keep, included @example 2023-11-29T23:33:27+0000"
     to: Optional[AwareDatetime] = None
-    "Point to @example 2023-11-29T23:33:27+0000"
+    "Latest moment to keep, included @example 2023-11-29T23:33:27+0000"
 
 
 class DecimalNotNullRangeInput(BaseModel):
-    """Money range"""
+    """Span of decimal values, both ends required"""
 
     from_: str = Field(serialization_alias="from")
-    "From @example 1.23"
+    "Lower bound, included @example 1.23"
     to: str
-    "To @example 2.34"
+    "Upper bound, included, never below the lower one @example 2.34"
 
 
 class ForwardPaginationInput(BaseModel):
-    """Used for forward pagination"""
+    """Walks a list forwards, page by page"""
 
     after: Optional[str] = None
-    "Cursor @example Cursor value from response (pageInfo -> endCursor)"
+    "Start after this cursor, taken from pageInfo.endCursor @example YXJyYXljb25uZWN0aW9uOjk="
     first: Optional[int] = None
     "How many records to retrieve @example 50"
 
 
 class MarkerDealHistorySearchInput(BaseModel):
-    """Filters and sorts for market deals history"""
+    """Filters and sorting for finished deals. Omitted fields impose no restriction"""
 
     action: Optional[MarketDealActionType] = None
-    "Market deal history action type"
+    "Which side of the deal you were on @example BUY"
     asset_ids: Optional[list[str]] = None
-    "Asset ids @example 123"
+    'Match any of these Steam asset IDs @example ["38384121671"]'
     color: Optional[list[CatalogColor]] = Field(
         default=None, deprecated="Use colorEnum instead"
     )
+    "Match any of these dominant skin colors @example [BLUE]"
     color_enum: Optional[list[CatalogColor]] = None
-    "Skin color from CSCatalog"
+    "Match any of these dominant skin colors @example [BLUE]"
     created_at: Optional["DateTimeRangeInput"] = None
+    "Keep deals created inside this time range"
     csgo_charm: Optional[bool] = None
-    "CS2 Contain or not charm"
+    "Keep only items that have a charm attached, or only those without @example true"
     csgo_collection: Optional[str] = None
-    "Steam collection @example set_gamma_2"
+    "Steam collection the skin comes from @example set_gamma_2"
     csgo_exterior: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoExteriorEnum instead"
     )
+    'Match any of these wear grades, as raw Steam values @example ["WearCategory0"]'
     csgo_exterior_enum: Optional[list[CSGOExterior]] = None
-    "CS2 Exterior"
+    "Match any of these wear grades @example [FACTORY_NEW]"
     csgo_float_from: Optional[str] = None
-    "CS2 Float from @example 0.1234"
+    "Lowest float value, from 0 to 1 @example 0.1234"
     csgo_float_to: Optional[str] = None
-    "CS2 Float to @example 0.2345"
+    "Highest float value, from 0 to 1 @example 0.2345"
     csgo_pattern: Optional[int] = None
-    "Steam collection @example 878"
+    "Exact paint seed, from 0 to 1000 @example 878"
     csgo_phase: Optional[CSGOPhase] = Field(
         default=None, deprecated="Use csgoPhaseEnum instead"
     )
+    "Doppler phase; applies to CS2 knives and gloves only @example BLACK_PEARL"
     csgo_phase_enum: Optional[CSGOPhase] = None
-    "If appId = CSGO. CSGO Item Category @example BLACK_PEARL"
+    "Doppler phase; applies to CS2 knives and gloves only @example BLACK_PEARL"
     csgo_rarity: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoRarityEnum instead"
     )
+    'Match any of these rarities, as raw Steam values @example ["Rarity_Ancient_Weapon"]'
     csgo_rarity_enum: Optional[list[CSGORarity]] = None
-    "CS2 Rarity"
+    "Match any of these item rarities @example [ANCIENT_WEAPON]"
     csgo_souvenir: Optional[bool] = None
-    "CS2 Souvenir"
+    "Keep only Souvenir items, or only non-Souvenir when false @example true"
     csgo_stat_trak: Optional[bool] = None
-    "CS2 StatTrak"
+    "Keep only StatTrak items, or only non-StatTrak when false @example true"
     csgo_sticker_film: Optional[CSGOStickerFilm] = None
-    "CS2 Film of Sticker"
+    "Sticker finish, such as holo or foil @example HOLO"
     csgo_sticker_names: Optional[list[str]] = None
-    "CS2 Sticker Names. Use market_csgo_stickers_suggestion for search @example paris2023_signature_floppy_4"
+    'Sticker codes to look for, combined per csgoStickerNamesOperand. Resolve codes via market_csgo_stickers_suggestion @example ["paris2023_signature_floppy_4"]'
     csgo_sticker_names_by_slot: Optional[list[Optional[str]]] = None
-    "CS2 Sticker Names By Slot @example cph2024_team_navi"
+    'Sticker code per slot, in slot order; null leaves a slot unconstrained @example ["cph2024_team_navi"]'
     csgo_sticker_names_operand: Optional[LogicOperand] = None
-    "CS2 Sticker Names Operation"
+    "Whether an item must carry all listed stickers or any of them @example AND"
     csgo_sticker_player: Optional[int] = None
-    "CS2 Player of Sticker @example 16839456"
+    "Catalog ID of the player the sticker belongs to @example 16839456"
     csgo_sticker_team: Optional[int] = None
-    "CS2 Team of Sticker @example 28"
+    "Catalog ID of the team the sticker belongs to @example 28"
     csgo_sticker_tournament: Optional[int] = None
-    "CS2 Tournament of Sticker @example 22"
+    "Catalog ID of the tournament the sticker belongs to @example 22"
     csgo_stickers: Optional[bool] = None
-    "CS2 Stickers"
+    "Keep only items that have stickers applied, or only those without @example true"
     name: Optional[str] = None
-    "Product name to search @example knife"
+    "Search text matched against the item name @example knife"
     name_hash: Optional[str] = None
-    "Product name hash to search strictly @example AK-47 | Vulcan"
+    "Exact Steam market hash name @example AK-47 | Vulcan (Field-Tested)"
     name_strict: Optional[bool] = None
-    "Product name to search strictly or not"
+    "Match the name exactly instead of as a search phrase @example true"
     only_for_orders: Optional[bool] = None
-    "Whether the deal was created by an order."
+    "Keep only deals a limit order created for you @example true"
     price: Optional["MoneyRangeInput"] = None
-    "Price from"
+    "Deal amount range, bounds included"
     sort: Optional["MarketDealHistorySortInput"] = None
-    "Sort"
+    "Field and direction to order the result by"
     status: Optional[MarketDealHistoryStatus] = None
-    "Market deal history status"
+    "How the deal ended @example SOLD"
 
 
 class MarketDealHistorySortInput(BaseModel):
-    """Sort"""
+    """Ordering rule for the deal history list"""
 
     field: MarketDealHistorySortField
-    "Field for sort"
+    "History entry field the list is ordered by"
     type_: SortType = Field(serialization_alias="type")
-    "Type of sort"
+    "Ascending or descending order"
 
 
 class MarketOrderSearchInput(BaseModel):
-    """Filters and sorts for orders list"""
+    """Filters and sorting for standing buy orders. Omitted fields impose no restriction"""
 
     app_id: Optional[SteamApp] = None
-    "Steam application"
+    "Limit the search to items of one Steam game @example CSGO"
     csgo_category: Optional[CSGOCategory] = None
-    "CS2 Category"
+    "Weapon class the wanted item belongs to @example PISTOLS"
     csgo_exterior_enum: Optional[list[CSGOExterior]] = None
-    "CS2 Exterior"
+    "Match any of these wear grades @example [FACTORY_NEW]"
     csgo_rarity_enum: Optional[list[CSGORarity]] = None
-    "CS2 Rarity"
+    "Match any of these item rarities @example [ANCIENT_WEAPON]"
     csgo_subcategory: Optional[CSGOSubcategory] = None
-    "CS2 Subcategory"
+    "Concrete weapon within the class @example GLOCK"
     distinct_values: Optional[bool] = None
-    "Get only unique (by name hash) products or not"
+    "Collapse the result to one order per market hash name @example true"
     name_hash: Optional[str] = None
-    "Product name hash to search strictly @example AK-47 | Vulcan"
+    "Exact Steam market hash name of the wanted item @example AK-47 | Vulcan (Field-Tested)"
     name_strict: Optional[bool] = None
-    "Product name to search strictly or not"
+    "Match the name exactly instead of as a search phrase @example true"
     person_own: Optional[bool] = False
-    "Own by user"
+    "Return only your own orders instead of the whole market @example true"
     price: Optional["MoneyRangeInput"] = None
-    "Price from and to"
+    "Price range an order must offer per item, bounds included"
     price_from: Optional["MoneyInput"] = Field(
         default=None, deprecated="Use MoneyRangeInput $price instead"
     )
-    "Price from"
+    "Lowest price an order must offer per item"
     price_to: Optional["MoneyInput"] = Field(
         default=None, deprecated="Use MoneyRangeInput $price instead"
     )
-    "Price to"
+    "Highest price an order may offer per item"
     sort: Optional["MarketOrderSortInput"] = None
-    "Sort"
+    "Field and direction to order the result by"
 
 
 class MarketOrderSortInput(BaseModel):
-    """Sort"""
+    """Ordering rule for the buy order list"""
 
     field: MarketOrderSortField
-    "Field for sort"
+    "Order field the list is ordered by"
     type_: SortType = Field(serialization_alias="type")
-    "Type of sort"
+    "Ascending or descending order"
 
 
 class MarketProductAppIdAssetIdInput(BaseModel):
+    """Points at one item by its Steam asset ID within a game"""
+
     app: SteamApp
+    "Steam game the item belongs to @example CSGO"
     asset_id: str
-    "Asset ID @example 34070244882"
+    "Steam asset ID of the item @example 34070244882"
 
 
 class MarketProductAppIdNameHashInput(BaseModel):
+    """Points at any item of a given kind, so the cheapest matching listing can be bought"""
+
     app: SteamApp
+    "Steam game the item belongs to @example CSGO"
     name_hash: str
-    "Name hash @example ★ Moto Gloves | Finish Line (Factory New)"
+    "Steam market hash name of the wanted item @example ★ Moto Gloves | Finish Line (Factory New)"
     phase: Optional[CSGOPhase] = None
     "Optional Doppler phase. When passed, the buy matches not only by nameHash but also by phase (paint index)"
 
 
 class MarketProductEditInput(BaseModel):
+    """New price for one listing. Identify it either by productId or by assetId"""
+
     asset_id: Optional[str] = None
-    "Asset ID @example 38384121671"
+    "Steam asset ID of the listed item, used when productId is unknown @example 38384121671"
     price: "MoneyInput"
+    "Asking price to set on the listing"
     product_id: Optional[str] = None
-    "Inventory ID @example 1ef34673-32bf-6dbc-84bb-0242ac1e000b"
+    "Listing to reprice @example 1ef34673-32bf-6dbc-84bb-0242ac1e000b"
 
 
 class MarketProductNewInput(BaseModel):
+    """One item to put up for sale. Identify it either by inventoryId or by assetId"""
+
     asset_id: Optional[str] = None
-    "Asset ID @example 38384121671"
+    "Steam asset ID of the item, used when inventoryId is unknown @example 38384121671"
     inventory_id: Optional[str] = None
-    "Inventory ID @example 1ef34673-32bf-6dbc-84bb-0242ac1e000b"
+    "Item in your WhiteMarket inventory to sell @example 1ef34673-32bf-6dbc-84bb-0242ac1e000b"
     price: "MoneyInput"
+    "Asking price the item is listed at"
 
 
 class MarketProductSearchInput(BaseModel):
-    """Filters and sorts for products list"""
+    """Filters and sorting for the market listing search. Omitted fields impose no restriction"""
 
     app_id: Optional[SteamApp] = None
-    "Steam application"
+    "Limit the search to items of one Steam game @example CSGO"
     color_enum: Optional[list[CatalogColor]] = None
-    "Skin color from CSCatalog"
+    "Match any of these dominant skin colors @example [BLUE]"
     created_at: Optional["DateTimeRangeInput"] = None
+    "Keep listings published inside this time range"
     csgo_charm: Optional[bool] = None
-    "CS2 Contain or not charm"
+    "Keep only items that have a charm attached, or only those without @example true"
     csgo_collection: Optional[str] = None
-    "Steam collection @example set_gamma_2"
+    "Steam collection the skin comes from @example set_gamma_2"
     csgo_concrete_sticker: Optional[str] = Field(
         default=None, deprecated="Please do not use it"
     )
+    "No longer applied by the server; use csgoStickerNames @example paris2023_signature_floppy_4"
     csgo_exterior: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoExteriorEnum instead"
     )
+    'Match any of these wear grades, as raw Steam values @example ["WearCategory0"]'
     csgo_exterior_enum: Optional[list[CSGOExterior]] = None
-    "CS2 Exterior"
+    "Match any of these wear grades @example [FACTORY_NEW]"
     csgo_fade_from: Optional[Decimal] = None
-    "CS2 Fade percentage from @example 80.0"
+    "Lowest fade coverage, in percent @example 80.0"
     csgo_fade_rank_from: Optional[int] = None
-    "CS2 Fade rank from"
+    "Best fade rank to accept, 1 being the highest coverage @example 42"
     csgo_fade_rank_to: Optional[int] = None
-    "CS2 Fade rank to"
+    "Worst fade rank to accept @example 42"
     csgo_fade_to: Optional[Decimal] = None
-    "CS2 Fade percentage to @example 100.0"
+    "Highest fade coverage, in percent @example 100.0"
     csgo_float_from: Optional[str] = None
-    "CS2 Float from @example 0.1234"
+    "Lowest float value, from 0 to 1 @example 0.1234"
     csgo_float_to: Optional[str] = None
-    "CS2 Float to @example 0.2345"
+    "Highest float value, from 0 to 1 @example 0.2345"
     csgo_item_categories_exclude: Optional[list[CSGOCategory]] = None
-    "CS2 Item Categories to exclude @example PISTOLS"
+    "Drop listings from these weapon classes @example [PISTOLS]"
     csgo_item_category: Optional[str] = Field(
         default=None, deprecated="Use csgoItemCategoryEnum instead"
     )
+    "Weapon class as a raw string; unknown values are ignored @example PISTOLS"
     csgo_item_category_enum: Optional[CSGOCategory] = None
-    "CS2 Item Category @example PISTOLS"
+    "Weapon class the item belongs to @example PISTOLS"
     csgo_item_skin: Optional[str] = None
-    "CS2 Item Skin @example Twilight Galaxy"
+    "Skin name without the weapon prefix @example Twilight Galaxy"
     csgo_item_subcategories_exclude: Optional[list[CSGOSubcategory]] = None
-    "CS2 Item Subcategories to exclude @example KNIFE_BOWIE"
+    "Drop listings of these concrete weapons @example [KNIFE_BOWIE]"
     csgo_item_subcategory: Optional[str] = Field(
         default=None, deprecated="Use csgoItemSubcategoryEnum instead"
     )
+    "Concrete weapon as a raw string; unknown values are ignored @example weapon_knife_butterfly"
     csgo_item_subcategory_enum: Optional[CSGOSubcategory] = None
-    "CS2 Item Subcategory @example weapon_glock"
+    "Concrete weapon within the class @example GLOCK"
     csgo_pattern: Optional[int] = None
-    "Steam collection @example 878"
+    "Exact paint seed, from 0 to 1000 @example 878"
     csgo_phase: Optional[CSGOPhase] = None
-    "If appId = CSGO. CSGO Phase"
+    "Doppler phase, legacy field read only when csgoPhaseEnum is omitted @example BLACK_PEARL"
     csgo_phase_enum: Optional[CSGOPhase] = None
-    "If appId = CSGO. CSGO Item Category @example BLACK_PEARL"
+    "Doppler phase; applies to CS2 knives and gloves only @example BLACK_PEARL"
     csgo_rarity: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoRarityEnum instead"
     )
+    'Match any of these rarities, as raw Steam values @example ["Rarity_Ancient_Weapon"]'
     csgo_rarity_enum: Optional[list[CSGORarity]] = None
-    "CS2 Rarity"
+    "Match any of these item rarities @example [ANCIENT_WEAPON]"
     csgo_souvenir: Optional[bool] = None
-    "CS2 Souvenir"
+    "Keep only Souvenir items, or only non-Souvenir when false @example true"
     csgo_stat_trak: Optional[bool] = None
-    "CS2 StatTrak"
+    "Keep only StatTrak items, or only non-StatTrak when false @example true"
     csgo_sticker_film: Optional[CSGOStickerFilm] = None
-    "CS2 Film of Sticker"
+    "Sticker finish, such as holo or foil @example HOLO"
     csgo_sticker_names: Optional[list[str]] = None
-    "CS2 Sticker Names. Use market_csgo_stickers_suggestion for search @example paris2023_signature_floppy_4"
+    'Sticker codes to look for, combined per csgoStickerNamesOperand. Resolve codes via market_csgo_stickers_suggestion @example ["paris2023_signature_floppy_4"]'
     csgo_sticker_names_by_slot: Optional[list[Optional[str]]] = None
-    "CS2 Sticker Names By Slot @example cph2024_team_navi"
+    'Sticker code per slot, in slot order; null leaves a slot unconstrained @example ["cph2024_team_navi"]'
     csgo_sticker_names_operand: Optional[LogicOperand] = None
-    "CS2 Sticker Names Operation"
+    "Whether an item must carry all listed stickers or any of them @example AND"
     csgo_sticker_player: Optional[int] = None
-    "CS2 Player of Sticker @example 16839456"
+    "Catalog ID of the player the sticker belongs to @example 16839456"
     csgo_sticker_team: Optional[int] = None
-    "CS2 Team of Sticker @example 28"
+    "Catalog ID of the team the sticker belongs to @example 28"
     csgo_sticker_tournament: Optional[int] = None
-    "CS2 Tournament of Sticker @example 22"
+    "Catalog ID of the tournament the sticker belongs to @example 22"
     csgo_stickers: Optional[bool] = None
-    "CS2 Contain or not stickers"
+    "Keep only items that have stickers applied, or only those without @example true"
     csgo_weapon: Optional[str] = Field(
         default=None, deprecated="Use csgoItemSubcategoryEnum instead"
     )
+    "Concrete weapon as a raw string, kept for older clients @example weapon_glock"
     delivery_promise: Optional[DeliveryPromise] = None
-    "Delivery promise @example HOURS12"
+    "Keep only sellers committing to deliver at least this fast @example HOURS12"
     delivery_type: Optional[DeliveryType] = None
-    "Delivery type @example AUTO"
+    "Keep only items handed over this way: by bot or by the seller @example AUTO"
     distinct_values: Optional[bool] = None
-    "Get only unique (by name hash) products or not"
+    "Collapse the result to one listing per market hash name @example true"
     for_trade: Optional[bool] = None
+    "Include items still in the Steam trade protection window, only wm-sell listings @example true"
     ids: Optional[list[str]] = None
-    "Product IDs @example 1edf828f-d3c4-65ca-909c-0242ac12001d"
+    'Fetch these listings by ID, up to 100 per request @example ["1edf828f-d3c4-65ca-909c-0242ac12001d"]'
     is_popular: Optional[bool] = None
-    "Is popular skin or not"
+    "Keep only skins marked popular in the catalog @example true"
     is_weapon_and_gear: Optional[bool] = None
-    "Weapons, gloves, agent category"
+    "Keep only weapons, gloves and agents, dropping stickers and cases @example true"
     name: Optional[str] = None
-    "Product name to search @example Vulcan"
+    "Search text matched against the item name @example Vulcan"
     name_hash: Optional[str] = None
-    "Product name hash to search strictly @example AK-47 | Vulcan"
+    "Exact Steam market hash name @example AK-47 | Vulcan (Field-Tested)"
     name_strict: Optional[bool] = None
-    "Product name to search strictly or not"
+    "Match the name exactly instead of as a search phrase @example true"
     names: Optional[list[str]] = None
-    "Product names to search strictly @example AK-47 | Vulcan"
+    'Match any of these item names exactly @example ["AK-47 | Vulcan"]'
     names_hash: Optional[list[str]] = None
-    "Product names hash to search strictly @example AK-47 | Vulcan"
+    'Match any of these exact Steam market hash names @example ["AK-47 | Vulcan (Field-Tested)"]'
     offer_type: Optional[MarketOfferType] = None
-    "Market product offer type @example BARGAIN"
+    "Keep only listings accepting this kind of offer @example BARGAIN"
     only_promo: Optional[bool] = None
+    "Keep only listings taking part in a promo campaign @example true"
     price: Optional["MoneyRangeInput"] = None
-    "Price from and to"
+    "Price range the listing must fall into, bounds included"
     price_from: Optional["MoneyInput"] = Field(
         default=None, deprecated="Use MoneyRangeInput $price instead"
     )
-    "Price from"
+    "Lowest acceptable price, in the currency of the amount passed"
     price_to: Optional["MoneyInput"] = Field(
         default=None, deprecated="Use MoneyRangeInput $price instead"
     )
-    "Price to"
+    "Highest acceptable price, in the currency of the amount passed"
     sort: Optional["MarketProductSortInput"] = None
-    "Sort"
+    "Field and direction to order the result by"
     special: Optional[bool] = None
-    "Only products with special = true for the current person (Gold Rush cashback). Empty list if the person is not eligible. false and null do not filter"
+    "Only products with special = true for the current person (Gold Rush cashback). Empty list if the person is not eligible. false and null do not filter @example true"
     store_slug: Optional[str] = None
-    "Store slug @example best-store"
+    "Limit the search to one seller store @example best-store"
     super_deal: Optional[bool] = None
-    "Superdeal or not"
+    "Keep only listings priced far below the market @example true"
 
 
 class MarketProductSortInput(BaseModel):
-    """Sort"""
+    """Ordering rule for the market listing list"""
 
     field: MarketProductSortField
-    "Field for sort"
+    "Listing field the list is ordered by"
     type_: SortType = Field(serialization_alias="type")
-    "Type of sort"
+    "Ascending or descending order"
 
 
 class MoneyInput(BaseModel):
-    """Money"""
+    """Amount together with the currency it is given in"""
 
     currency: Currency
-    "Currency"
+    "Currency the amount is given in"
     value: str
-    "Decimal value @example 42.42"
+    "Amount as a decimal string, never a float @example 42.42"
 
 
 class MoneyRangeInput(BaseModel):
-    """Money range"""
+    """Price span to filter by, either end may be left out"""
 
     from_: Optional["MoneyInput"] = Field(serialization_alias="from", default=None)
+    "Lower bound, included; omit for no lower bound"
     to: Optional["MoneyInput"] = None
+    "Upper bound, included; omit for no upper bound"
 
 
 class PersonEmailInput(BaseModel):
-    """Input with person's email address"""
+    """Email address a user sets on their account"""
 
     value: str
-    "Email Address @example hello@me.com"
+    "Address to send account mail to @example trader@example.com"
 
 
 class PersonInventorySearchInput(BaseModel):
@@ -386,158 +414,175 @@ class PersonInventorySearchInput(BaseModel):
     color: Optional[list[CatalogColor]] = Field(
         default=None, deprecated="Use colorEnum instead"
     )
+    "Keep only skins of these colours, legacy field"
     color_enum: Optional[list[CatalogColor]] = None
-    "Skin color from CSCatalog"
+    "Keep only skins of these dominant colours"
     csgo_charm: Optional[bool] = None
-    "CS2 Charm"
+    "Keep only items that carry a charm @example true"
     csgo_collection: Optional[str] = None
-    "Steam collection @example set_gamma_2"
+    "Keep only skins from this collection @example set_gamma_2"
     csgo_exterior: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoExteriorEnum instead"
     )
+    "Keep only items of these wear grades, by legacy string keys"
     csgo_exterior_enum: Optional[list[CSGOExterior]] = None
-    "CS2 Exterior"
+    "Keep only items of these wear grades"
     csgo_fade_from: Optional[Decimal] = None
-    "CS2 Fade percentage from @example 80.0"
+    "Lowest fade percentage to keep @example 80.0"
     csgo_fade_rank_from: Optional[int] = None
-    "CS2 Fade rank from"
+    "Best fade rank to keep, 1 is the most sought after @example 42"
     csgo_fade_rank_to: Optional[int] = None
-    "CS2 Fade rank to"
+    "Worst fade rank to keep @example 420"
     csgo_fade_to: Optional[Decimal] = None
-    "CS2 Fade percentage to @example 100.0"
+    "Highest fade percentage to keep @example 100.0"
     csgo_float_from: Optional[str] = None
-    "CS2 Float from @example 0.1234"
+    "Lowest float value to keep, from 0 to 1 @example 0.1234"
     csgo_float_to: Optional[str] = None
-    "CS2 Float to @example 0.2345"
+    "Highest float value to keep, from 0 to 1 @example 0.2345"
     csgo_item_category_enum: Optional[CSGOCategory] = None
-    "CS2 Item Category @example PISTOLS"
+    "Keep only items of this catalog section @example PISTOLS"
     csgo_item_subcategory_enum: Optional[CSGOSubcategory] = None
-    "CS2 Item Subcategory @example weapon_glock"
+    "Keep only items of this weapon model @example KNIFE_KARAMBIT"
     csgo_pattern: Optional[int] = None
-    "Steam collection @example 878"
+    "Keep only items with this pattern seed @example 878"
     csgo_phase: Optional[CSGOPhase] = Field(
         default=None, deprecated="Use csgoPhaseEnum instead"
     )
+    "Keep only items of this Doppler phase, legacy field"
     csgo_phase_enum: Optional[CSGOPhase] = None
-    "If appId = CSGO. CSGO Item Category @example BLACK_PEARL"
+    "Keep only items of this Doppler phase @example BLACK_PEARL"
     csgo_rarity: Optional[list[str]] = Field(
         default=None, deprecated="Use csgoRarityEnum instead"
     )
+    "Keep only items of these rarity grades, by legacy string keys"
     csgo_rarity_enum: Optional[list[CSGORarity]] = None
-    "CS2 Rarity"
+    "Keep only items of these rarity grades"
     csgo_souvenir: Optional[bool] = None
-    "CS2 Souvenir"
+    "Keep only Souvenir items, or only non-Souvenir ones when false @example true"
     csgo_stat_trak: Optional[bool] = None
-    "CS2 StatTrak"
+    "Keep only StatTrak items, or only non-StatTrak ones when false @example true"
+    csgo_sticker_film: Optional[CSGOStickerFilm] = None
+    "Sticker finish, such as holo or foil @example HOLO"
     csgo_sticker_names: Optional[list[str]] = None
-    "CS2 Sticker Names. Use market_csgo_stickers_suggestion for search @example paris2023_signature_floppy_4"
+    'CS2 Sticker Names. Use market_csgo_stickers_suggestion for search @example ["paris2023_signature_floppy_4"]'
     csgo_sticker_names_operand: Optional[LogicOperand] = None
-    "CS2 Sticker Names Operation"
+    "Whether all named stickers must be present or any one of them"
+    csgo_sticker_player: Optional[int] = None
+    "Catalog ID of the player the sticker belongs to @example 16839456"
+    csgo_sticker_team: Optional[int] = None
+    "Catalog ID of the team the sticker belongs to @example 28"
+    csgo_sticker_tournament: Optional[int] = None
+    "Catalog ID of the tournament the sticker belongs to @example 22"
     csgo_stickers: Optional[bool] = None
-    "CS2 Stickers"
+    "Keep only items that carry stickers @example true"
     name: Optional[str] = None
-    "Product name to search @example Vulcan"
+    "Text to look for in the item name @example Vulcan"
     name_hash: Optional[str] = None
-    "Product name hash to search strictly @example AK-47 | Vulcan"
+    "Keep only items with exactly this Steam market name @example AK-47 | Vulcan"
     name_strict: Optional[bool] = None
-    "Product name to search strictly or not"
+    "Match the whole name instead of any part of it @example true"
     sort: Optional["MarketProductSortInput"] = None
-    "Sort"
+    "Field and direction to order by, unordered when omitted"
 
 
 class PersonStoreInput(BaseModel):
-    """Person store settings"""
+    """Storefront settings a seller can change"""
 
     avatar: Optional[AvatarType] = None
-    "Store avatar"
+    "Which preset avatar the storefront shows"
     banner: Optional[BannerType] = None
-    "Store banner"
+    "Which preset banner the storefront header shows"
     encoded_custom_avatar: Optional[str] = None
-    "Custom avatar in base64"
+    "Same avatar sent inline as base64 instead of a file @example iVBORw0KGgoAAAANSUhEUgAAAAUA"
     is_achievements_public: Optional[bool] = None
-    "Is achievements public"
+    "Show the achievements of the seller @example true"
     is_favorites_public: Optional[bool] = None
-    "Are favorites public"
+    "Show the favourites of the seller @example true"
     is_items_on_sale_public: Optional[bool] = None
-    "Is items on sale public"
+    "Show what the seller has on sale @example true"
     is_store_name_public: Optional[bool] = None
-    "Is store name public"
+    "Show the store name to visitors @example true"
     is_trade_history_public: Optional[bool] = None
-    "Is trade history public"
+    "Show the trade history of the seller @example true"
     store_name: Optional[str] = None
-    "Store name"
+    "Name to show instead of the Steam nickname @example My Best Store"
 
 
 class ProxyInput(BaseModel):
-    """Input with proxy"""
+    """Proxy the Steam requests of this user go through"""
 
     value: str = Field(repr=False)
-    "Steam Proxy @example http://user:pass@1.2.3.4:8080"
+    "Proxy url with credentials, http or https only @example http://user:pass@proxy.example.com:8080"
 
 
 class ReferrerCodeInput(BaseModel):
-    """Input with person's referrer code"""
+    """Invite code a new user signs up with"""
 
     value: str
-    "Referrer code @example 0a164726beafd9a1"
+    "Invite code, up to 16 characters @example 0a164726beafd9a1"
 
 
 class ReferrerInput(BaseModel):
-    """Input with person's email address"""
+    """Referral details a new user signs up with"""
 
     referrer_code: "ReferrerCodeInput"
-    "Person's referrer code"
+    "Invite code the new user came in with"
     referrer_tag: Optional[str] = None
-    "Referrer tag string @example google"
+    "Marketing tag the referrer attached, at most 64 characters @example google"
 
 
 class SteamApiKeyInput(BaseModel):
-    """Input with person's steam api key"""
+    """Steam Web API key a user stores on their account"""
 
     value: str = Field(repr=False)
-    "Steam api key @example EFA057EC4F63D90112C8D1C00311E01E"
+    "Key of 32 uppercase hex characters, taken from Steam @example 0123456789ABCDEF0123456789ABCDEF"
 
 
 class SteamLinkInput(BaseModel):
-    """Input with steam link"""
+    """Steam trade url the user is reachable at"""
 
     value: str
-    "Steam Link @example https://steamcommunity.com/tradeoffer/new/?partner=272985700&token=EqWnBOIL"
+    "Trade url copied from Steam, with partner and token @example https://steamcommunity.com/tradeoffer/new/?partner=100000001&token=abcd1234"
 
 
 class WalletTransactionSearchInput(BaseModel):
-    """Filters and sorts for wallet transactions list"""
+    """Filters and sorting for your balance history. Omitted fields impose no restriction"""
 
     created_at: Optional["DateTimeRangeInput"] = None
+    "Keep movements recorded inside this time range"
     currency: Optional[Currency] = None
+    "Keep movements recorded in this currency @example USD"
     fee_type: Optional[WalletTransactionFeeType] = None
+    "Keep only fees charged for this kind of event @example WITHDRAWAL"
     initial_currency_deposit: Optional[list[Currency]] = None
-    "Currency deposit"
+    "Keep top-ups the user paid in any of these currencies @example [USDT]"
     initial_currency_withdrawal: Optional[list[Currency]] = None
-    "Currency withdrawal"
+    "Keep cash-outs the user received in any of these currencies @example [USDT]"
     is_buyer: Optional[bool] = None
-    "Get only buy deals"
+    "Keep deal movements where you were the buyer @example true"
     is_seller: Optional[bool] = None
-    "Get only sell deals"
+    "Keep deal movements where you were the seller @example true"
     reason: Optional[WalletTransactionReason] = None
+    "Keep movements caused by this kind of event @example DEPOSIT"
     reasons: Optional[list[WalletTransactionReason]] = None
-    "Wallet transaction reasons"
+    "Keep movements caused by any of these kinds of event @example [DEPOSIT]"
     sort: Optional["WalletTransactionSortInput"] = None
-    "Sort"
+    "Field and direction to order the result by"
     status: Optional[WalletTransactionStatus] = None
+    "Keep movements at this settlement state @example SUCCESS"
     wallet_methods_deposit: Optional[list[str]] = None
-    "Wallet method deposit"
+    'Keep top-ups made through any of these methods @example ["whitebit"]'
     wallet_methods_withdrawal: Optional[list[str]] = None
-    "Wallet method withdrawal"
+    'Keep cash-outs made through any of these methods @example ["tipalti"]'
 
 
 class WalletTransactionSortInput(BaseModel):
-    """Sort"""
+    """Ordering rule for the wallet transaction list"""
 
     field: WalletTransactionSortField
-    "Field for sort"
+    "Transaction field the list is ordered by"
     type_: SortType = Field(serialization_alias="type")
-    "Type of sort"
+    "Ascending or descending order"
 
 
 MarkerDealHistorySearchInput.model_rebuild()
