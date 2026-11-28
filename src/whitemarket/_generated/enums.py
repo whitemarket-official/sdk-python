@@ -632,6 +632,13 @@ class PaymentProvider(UnknownTolerantEnum):
     ZEN = "ZEN"
 
 
+class PaymentProviderCurrency(UnknownTolerantEnum):
+    EUR = "EUR"
+    KZT = "KZT"
+    UAH = "UAH"
+    USD = "USD"
+
+
 class PersonDeliveryPromise(UnknownTolerantEnum):
     HOUR1 = "HOUR1"
     HOURS12 = "HOURS12"

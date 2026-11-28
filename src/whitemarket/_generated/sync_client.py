@@ -3673,7 +3673,7 @@ class GeneratedClient(BaseClient):
         self, proxy: ProxyInput, ttl: Union[Optional[int], UnsetType] = UNSET
     ) -> ProfileSteamProxySet:
         query = gql("""
-            mutation ProfileSteamProxySet($proxy: ProxyInput!, $ttl: Int = null) {
+            mutation ProfileSteamProxySet($proxy: ProxyInput!, $ttl: Int) {
               profile_steam_proxy_set(proxy: $proxy, ttl: $ttl)
             }
             """)
@@ -3726,7 +3726,7 @@ class GeneratedClient(BaseClient):
         ttl: Union[Optional[int], UnsetType] = UNSET,
     ) -> ProfileTokenSet:
         query = gql("""
-            mutation ProfileTokenSet($ownProxyRequired: Boolean = false, $payload: String!, $ttl: Int = null) {
+            mutation ProfileTokenSet($ownProxyRequired: Boolean = false, $payload: String!, $ttl: Int) {
               profile_token_set(
                 ownProxyRequired: $ownProxyRequired
                 payload: $payload
@@ -7456,6 +7456,10 @@ class GeneratedClient(BaseClient):
                 status
                 amount {
                   ...MoneyFields
+                }
+                paymentAmount {
+                  currency
+                  value
                 }
                 person {
                   ...PersonPublicFields

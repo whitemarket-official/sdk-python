@@ -322,6 +322,7 @@ from .enums import (
     MarketProductState,
     MarketProductStatus,
     PaymentProvider,
+    PaymentProviderCurrency,
     PersonDeliveryPromise,
     PriceIndicator,
     SortType,
@@ -925,6 +926,7 @@ from .wallet_deposits import (
     WalletDeposits,
     WalletDepositsWalletDeposits,
     WalletDepositsWalletDepositsAmount,
+    WalletDepositsWalletDepositsPaymentAmount,
     WalletDepositsWalletDepositsPerson,
 )
 from .wallet_transactions import (
@@ -1737,6 +1739,7 @@ __all__ = [
     "OrderNewOrderNewCSGOMarketOrderPrice",
     "OrderNewOrderNewMarketOrder",
     "PaymentProvider",
+    "PaymentProviderCurrency",
     "PersonAchievementFields",
     "PersonDeliveryPromise",
     "PersonEmailInput",
@@ -1798,6 +1801,7 @@ __all__ = [
     "WalletDeposits",
     "WalletDepositsWalletDeposits",
     "WalletDepositsWalletDepositsAmount",
+    "WalletDepositsWalletDepositsPaymentAmount",
     "WalletDepositsWalletDepositsPerson",
     "WalletMethodEnum",
     "WalletTransactionFeeType",

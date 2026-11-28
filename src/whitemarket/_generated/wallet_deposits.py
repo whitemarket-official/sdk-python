@@ -8,7 +8,7 @@ from pydantic import AwareDatetime, Field
 from whitemarket._runtime.secret import Secret
 
 from .base_model import BaseModel
-from .enums import PaymentProvider, WalletDepositStatus
+from .enums import PaymentProvider, PaymentProviderCurrency, WalletDepositStatus
 from .fragments import MoneyFields, PersonPublicFields
 
 
@@ -30,10 +30,18 @@ class WalletDepositsWalletDeposits(BaseModel):
     provider_payment_page: Optional[str]
     status: WalletDepositStatus
     amount: "WalletDepositsWalletDepositsAmount"
+    payment_amount: Optional["WalletDepositsWalletDepositsPaymentAmount"]
     person: "WalletDepositsWalletDepositsPerson"
 
 
 WalletDepositsWalletDepositsAmount = MoneyFields
+
+
+class WalletDepositsWalletDepositsPaymentAmount(BaseModel):
+    currency: PaymentProviderCurrency
+    value: str
+
+
 WalletDepositsWalletDepositsPerson = PersonPublicFields
 WalletDeposits.model_rebuild()
 WalletDepositsWalletDeposits.model_rebuild()
